@@ -3,12 +3,12 @@ package dns
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
 )
@@ -72,7 +72,7 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 			}
 		}
 
-		// Parse the response manually
+		// Parse the response using github.com/miekg/dns
 		banner, err := parseDNSResponse(response)
 		if err != nil {
 			log.Printf("Error parsing DNS response: %v", err)
@@ -89,123 +89,19 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 
 func parseDNSResponse(response []byte) (string, error) {
 	log.Printf("Raw DNS response: %x", response)
-	reader := bytes.NewReader(response)
 
-	// Skip the header (12 bytes)
-	header := make([]byte, 12)
-	if _, err := reader.Read(header); err != nil {
-		return "", fmt.Errorf("error reading DNS header: %w", err)
+	msg := new(dns.Msg)
+	if err := msg.Unpack(response); err != nil {
+		return "", fmt.Errorf("error unpacking DNS response: %w", err)
 	}
-	log.Printf("DNS header: %x", header)
 
-	// Skip the question section
-	for {
-		var length byte
-		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
-			return "", fmt.Errorf("error reading question section length: %w", err)
-		}
-
-		if length == 0 {
-			break
-		}
-
-		if _, err := reader.Seek(int64(length), 1); err != nil {
-			return "", fmt.Errorf("error skipping question section: %w", err)
+	for _, answer := range msg.Answer {
+		if txt, ok := answer.(*dns.TXT); ok {
+			return "version.bind: " + txt.Txt[0], nil
 		}
 	}
 
-	// Skip the question type and class (4 bytes)
-	qTypeClass := make([]byte, 4)
-	if _, err := reader.Read(qTypeClass); err != nil {
-		return "", fmt.Errorf("error reading question type/class: %w", err)
-	}
-	log.Printf("DNS question type/class: %x", qTypeClass)
-
-	// Read the answer section
-	if _, err := readName(reader); err != nil {
-		return "", fmt.Errorf("error reading answer name: %w", err)
-	}
-
-	var answerType uint16
-	if err := binary.Read(reader, binary.BigEndian, &answerType); err != nil {
-		return "", fmt.Errorf("error reading answer type: %w", err)
-	}
-	log.Printf("DNS answer type: %x", answerType)
-
-	if answerType != 0x0010 { // Check if the answer type is TXT (0x0010)
-		return "", fmt.Errorf("unexpected answer type: %x", answerType)
-	}
-
-	// Read the answer class (2 bytes), TTL (4 bytes), and RDLength (2 bytes)
-	answerMeta := make([]byte, 8)
-	if _, err := reader.Read(answerMeta); err != nil {
-		return "", fmt.Errorf("error reading answer metadata: %w", err)
-	}
-	log.Printf("DNS answer metadata: %x", answerMeta)
-
-	var rdLength uint16
-	if err := binary.Read(reader, binary.BigEndian, &rdLength); err != nil {
-		return "", fmt.Errorf("error reading RDLength: %w", err)
-	}
-	log.Printf("DNS RDLength: %x", rdLength)
-
-	// Read the TXT data
-	txtData := make([]byte, rdLength)
-	if _, err := reader.Read(txtData); err != nil {
-		return "", fmt.Errorf("error reading TXT data: %w", err)
-	}
-	log.Printf("TXT Data: %x", txtData)
-
-	if len(txtData) > 0 {
-		return string(txtData[1:]), nil
-	}
-
-	return "", fmt.Errorf("no TXT data found")
-}
-
-func readName(reader *bytes.Reader) (string, error) {
-	var name []byte
-	for {
-		var length byte
-		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
-			return "", fmt.Errorf("error reading name length: %w", err)
-		}
-
-		// Check for name compression (pointer)
-		if length&0xc0 == 0xc0 {
-			var pointerOffset byte
-			if err := binary.Read(reader, binary.BigEndian, &pointerOffset); err != nil {
-				return "", fmt.Errorf("error reading name pointer: %w", err)
-			}
-			log.Printf("DNS answer name pointer: %x%x", length, pointerOffset)
-			// Handle the pointer correctly
-			offset := ((uint16(length) & 0x3f) << 8) | uint16(pointerOffset)
-			currentPos, _ := reader.Seek(0, 1)
-			if _, err := reader.Seek(int64(offset), 0); err != nil {
-				return "", fmt.Errorf("error seeking to pointer offset: %w", err)
-			}
-			if _, err := readName(reader); err != nil {
-				return "", fmt.Errorf("error reading pointed-to name: %w", err)
-			}
-			if _, err := reader.Seek(currentPos, 0); err != nil {
-				return "", fmt.Errorf("error seeking back to current position: %w", err)
-			}
-			break
-		}
-
-		if length == 0 {
-			break
-		}
-
-		part := make([]byte, length)
-		if _, err := reader.Read(part); err != nil {
-			return "", fmt.Errorf("error reading name part: %w", err)
-		}
-		name = append(name, part...)
-		name = append(name, '.')
-	}
-
-	return string(name), nil
+	return "", fmt.Errorf("no TXT records found")
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
