@@ -23,18 +23,34 @@ func init() {
 	plugins.RegisterPlugin(&MYSQLPlugin{})
 }
 
-func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	version, err := p.detectVersion(conn, timeout)
-	if err != nil {
-		return nil, err
-	}
+func (p *MYSQLPlugin) Name() string {
+	return MYSQL
+}
 
+func (p *MYSQLPlugin) PortPriority(port uint16) bool {
+	return port == 3306
+}
+
+func (p *MYSQLPlugin) Type() plugins.Protocol {
+	return plugins.TCP
+}
+
+func (p *MYSQLPlugin) Priority() int {
+	return 133
+}
+
+func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	response, err := utils.Recv(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
 	if len(response) == 0 {
 		return nil, nil
+	}
+
+	version, err := p.detectVersion(conn, timeout)
+	if err != nil {
+		version = "unknown"
 	}
 
 	mysqlVersionStr, err := checkInitialHandshakePacket(response)
