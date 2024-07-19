@@ -1,8 +1,12 @@
 package mysql
 
 import (
+	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"net"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
@@ -20,34 +24,74 @@ func init() {
 }
 
 func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	response, err := utils.Recv(conn, timeout)
+	version, err := p.detectVersion(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
+
+	payload := plugins.ServiceMySQL{
+		PacketType:   "version_detection",
+		ErrorMessage: "",
+		ErrorCode:    0,
+		Version:      version,
+	}
+
+	return plugins.CreateServiceFrom(target, payload, false, version, plugins.TCP), nil
+}
+
+func (p *MYSQLPlugin) detectVersion(conn net.Conn, timeout time.Duration) (string, error) {
+	response, err := utils.Recv(conn, timeout)
+	if err != nil {
+		return "", err
+	}
 	if len(response) == 0 {
-		return nil, nil
+		return "", nil
 	}
 
-	mysqlVersionStr, err := CheckInitialHandshakePacket(response)
+	// Try to get version from initial handshake packet
+	version, err := checkInitialHandshakePacket(response)
 	if err == nil {
-		payload := plugins.ServiceMySQL{
-			PacketType:   "handshake",
-			ErrorMessage: "",
-			ErrorCode:    0,
-		}
-		return plugins.CreateServiceFrom(target, payload, false, mysqlVersionStr, plugins.TCP), nil
+		return version, nil
 	}
 
-	errorStr, errorCode, err := CheckErrorMessagePacket(response)
+	// If initial handshake doesn't work, perform additional tests
+	errorStr, errorCode, err := checkErrorMessagePacket(response)
 	if err == nil {
-		payload := plugins.ServiceMySQL{
-			PacketType:   "error",
-			ErrorMessage: errorStr,
-			ErrorCode:    errorCode,
+		// Analyze error message to infer version
+		version := analyzeErrorMessage(errorStr, errorCode)
+		if version != "" {
+			return version, nil
 		}
-		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 	}
-	return nil, nil
+
+	// Perform additional tests if necessary
+	return p.performAdditionalTests(conn, timeout)
+}
+
+func (p *MYSQLPlugin) performAdditionalTests(conn net.Conn, timeout time.Duration) (string, error) {
+	// Example: Try different authentication methods and analyze responses
+	authMethods := []string{"mysql_native_password", "caching_sha2_password"}
+	for _, authMethod := range authMethods {
+		err := attemptAuthMethod(conn, timeout, authMethod)
+		if err != nil {
+			version := analyzeAuthMethodError(err.Error())
+			if version != "" {
+				return version, nil
+			}
+		}
+	}
+
+	// Example: Try SSL/TLS connection and analyze response
+	err := attemptSSLConnection(conn, timeout)
+	if err != nil {
+		version := analyzeSSLError(err.Error())
+		if version != "" {
+			return version, nil
+		}
+	}
+
+	// Add more tests as needed
+	return "", fmt.Errorf("unable to detect MySQL version")
 }
 
 func (p *MYSQLPlugin) PortPriority(port uint16) bool {
@@ -66,7 +110,7 @@ func (p *MYSQLPlugin) Priority() int {
 	return 133
 }
 
-func CheckErrorMessagePacket(response []byte) (string, int, error) {
+func checkErrorMessagePacket(response []byte) (string, int, error) {
 	if len(response) < 8 {
 		return "", 0, &utils.InvalidResponseErrorInfo{
 			Service: MYSQL,
@@ -74,7 +118,7 @@ func CheckErrorMessagePacket(response []byte) (string, int, error) {
 		}
 	}
 
-	packetLength := int(uint32(response[0]) | uint32(response[1])<<8 | uint32(response[2])<<16 | uint32(response[3])<<24)
+	packetLength := int(binary.LittleEndian.Uint32(response[:4]))
 	actualResponseLength := len(response) - 4
 
 	if packetLength != actualResponseLength {
@@ -92,7 +136,7 @@ func CheckErrorMessagePacket(response []byte) (string, int, error) {
 		}
 	}
 
-	errorCode := int(uint32(response[5]) | uint32(response[6])<<8)
+	errorCode := int(binary.LittleEndian.Uint16(response[5:7]))
 	if errorCode < 1000 || errorCode > 2000 {
 		return "", errorCode, &utils.InvalidResponseErrorInfo{
 			Service: MYSQL,
@@ -108,7 +152,7 @@ func CheckErrorMessagePacket(response []byte) (string, int, error) {
 	return errorStr, errorCode, nil
 }
 
-func CheckInitialHandshakePacket(response []byte) (string, error) {
+func checkInitialHandshakePacket(response []byte) (string, error) {
 	if len(response) < 35 {
 		return "", &utils.InvalidResponseErrorInfo{
 			Service: MYSQL,
@@ -116,7 +160,7 @@ func CheckInitialHandshakePacket(response []byte) (string, error) {
 		}
 	}
 
-	packetLength := int(uint32(response[0]) | uint32(response[1])<<8 | uint32(response[2])<<16 | uint32(response[3])<<24)
+	packetLength := int(binary.LittleEndian.Uint32(response[:4]))
 	version := int(response[4])
 
 	if packetLength < 25 || packetLength > 4096 {
@@ -201,4 +245,196 @@ func readEOFTerminatedASCIIString(buffer []byte, startPosition int) (string, err
 	}
 
 	return string(characters), nil
+}
+
+// analyzeErrorMessage infers version based on error message
+func analyzeErrorMessage(errorStr string, errorCode int) string {
+	if errorCode == 1130 && matchHostNotAllowedError(errorStr) {
+		return "MySQL 5.7 or later"
+	}
+	// Add more error message analysis here
+	return ""
+}
+
+// matchHostNotAllowedError matches the "Host 'x.x.x.x' is not allowed" error without hardcoded IP
+func matchHostNotAllowedError(errorStr string) bool {
+	matched, _ := regexp.MatchString(`Host '.*' is not allowed to connect to this MySQL server`, errorStr)
+	return matched
+}
+
+// attemptAuthMethod tries to authenticate using a specific method
+func attemptAuthMethod(conn net.Conn, timeout time.Duration, authMethod string) error {
+	authPacket := buildAuthPacket(authMethod)
+	_, err := conn.Write(authPacket)
+	if err != nil {
+		return err
+	}
+
+	response, err := utils.Recv(conn, timeout)
+	if err != nil {
+		return err
+	}
+
+	return parseAuthResponse(response)
+}
+
+// buildAuthPacket builds an authentication packet for a specific method
+func buildAuthPacket(authMethod string) []byte {
+	// Example: Build a packet based on the auth method
+	packet := []byte{0x01, 0x00, 0x00, 0x00, 0x01}
+	packet = append(packet, []byte(authMethod)...)
+	return packet
+}
+
+// parseAuthResponse parses the response from an authentication attempt
+func parseAuthResponse(response []byte) error {
+	if len(response) == 0 {
+		return fmt.Errorf("empty response")
+	}
+
+	if response[0] == 0x00 {
+		return nil
+	} else if response[0] == 0xff {
+		return fmt.Errorf("authentication failed: %s", string(response[1:]))
+	}
+
+	return fmt.Errorf("unexpected response: %v", response)
+}
+
+// analyzeAuthMethodError infers version based on authentication error
+func analyzeAuthMethodError(errorStr string) string {
+	if matchAuthPluginError(errorStr, "caching_sha2_password") {
+		return "MySQL 8.0 or later"
+	}
+	// Add more detailed checks for 8.0.x versions here
+	if matchAuthPluginError(errorStr, "mysql_native_password") {
+		// Example detailed check for MySQL 5.7.x versions
+		if strings.Contains(errorStr, "specific 5.7.x error message") {
+			return "MySQL 5.7.x"
+		}
+	}
+	return ""
+}
+
+// matchAuthPluginError matches specific auth plugin errors
+func matchAuthPluginError(errorStr, plugin string) bool {
+	matched, _ := regexp.MatchString(fmt.Sprintf(`Authentication plugin '%s' cannot be loaded`, plugin), errorStr)
+	return matched
+}
+
+// attemptSSLConnection tries to establish an SSL connection
+func attemptSSLConnection(conn net.Conn, timeout time.Duration) error {
+	clientHello := buildSSLClientHello()
+	_, err := conn.Write(clientHello)
+	if err != nil {
+		return err
+	}
+
+	response, err := utils.Recv(conn, timeout)
+	if err != nil {
+		return err
+	}
+
+	return parseSSLResponse(response)
+}
+
+// buildSSLClientHello builds an SSL ClientHello packet
+func buildSSLClientHello() []byte {
+	clientHello := tls.ClientHelloInfo{
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, // MySQL 5.7 and 8.0
+			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,    // MySQL 5.6
+			tls.TLS_AES_256_GCM_SHA384,                // MySQL 8.0.16+
+		},
+	}
+
+	config := &tls.Config{
+		CipherSuites:       clientHello.CipherSuites,
+		InsecureSkipVerify: true,
+	}
+
+	conn := tls.Client(conn, config)
+
+	// Perform handshake to trigger sending ClientHello
+	err := conn.Handshake()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// parseSSLResponse parses the response from an SSL handshake attempt
+func parseSSLResponse(response []byte) error {
+	if len(response) == 0 {
+		return fmt.Errorf("empty response")
+	}
+
+	if response[0] == 0x15 { // SSL Alert
+		return fmt.Errorf("SSL handshake failed: %s", string(response[1:]))
+	} else if response[0] == 0x16 { // SSL Handshake
+		return nil
+	}
+
+	return fmt.Errorf("unexpected SSL response: %v", response)
+}
+
+// analyzeSSLError infers version based on SSL error
+func analyzeSSLError(errorStr string) string {
+	if matchSSLAlertError(errorStr, "handshake failure") {
+		return "MySQL 5.7 or later"
+	}
+	// Add more detailed checks for SSL errors here
+	return ""
+}
+
+// matchSSLAlertError matches specific SSL alert errors
+func matchSSLAlertError(errorStr, alert string) bool {
+	matched, _ := regexp.MatchString(fmt.Sprintf(`SSL handshake failed: %s`, alert), errorStr)
+	return matched
+}
+
+func (p *MYSQLPlugin) detectDetailedVersion(conn net.Conn, baseVersion string) string {
+	switch baseVersion {
+	case "MySQL 5.7":
+		version := p.checkTLSVersion(conn, tls.VersionTLS12)
+		if version == "TLS 1.2" {
+			if p.checkCipherSuite(conn, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) {
+				return "MySQL 5.7.x"
+			}
+		}
+	case "MySQL 8.0":
+		version := p.checkTLSVersion(conn, tls.VersionTLS13)
+		if version == "TLS 1.3" {
+			if p.checkCipherSuite(conn, tls.TLS_AES_256_GCM_SHA384) {
+				return "MySQL 8.0.16+"
+			}
+		}
+	}
+	return baseVersion
+}
+
+func (p *MYSQLPlugin) checkTLSVersion(conn net.Conn, version uint16) string {
+	config := &tls.Config{
+		MaxVersion:         version,
+		InsecureSkipVerify: true,
+	}
+	tlsConn := tls.Client(conn, config)
+
+	err := tlsConn.Handshake()
+	if err == nil {
+		return fmt.Sprintf("TLS %d.%d", version>>8, version&0xff)
+	}
+	return ""
+}
+
+func (p *MYSQLPlugin) checkCipherSuite(conn net.Conn, cipherSuite uint16) bool {
+	config := &tls.Config{
+		CipherSuites:       []uint16{cipherSuite},
+		InsecureSkipVerify: true,
+	}
+	tlsConn := tls.Client(conn, config)
+
+	err := tlsConn.Handshake()
+	return err == nil
 }
