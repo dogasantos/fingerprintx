@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -62,25 +63,25 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 		response, err := utils.SendRecv(conn, InitialConnectionPackage, timeout)
 		if err != nil {
 			log.Printf("Error sending/receiving DNS query: %v", err)
-			return false, "", err
+			continue
 		}
 
 		if len(response) == 0 {
 			log.Printf("Received empty response")
-			return false, "", nil
+			continue
 		}
 
 		if conn.RemoteAddr().Network() == "udp" {
-			if !bytes.Equal(transactionID[0:1], response[0:1]) {
+			if !bytes.Equal(transactionID, response[:2]) {
 				log.Printf("Transaction ID mismatch for UDP response")
-				return false, "", nil
+				continue
 			}
 		}
 
 		if conn.RemoteAddr().Network() == "tcp" {
-			if !bytes.Equal(transactionID[0:1], response[2:3]) {
+			if !bytes.Equal(transactionID, response[2:4]) {
 				log.Printf("Transaction ID mismatch for TCP response")
-				return false, "", nil
+				continue
 			}
 		}
 
@@ -88,7 +89,7 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 		banner, err := parseDNSResponse(response)
 		if err != nil {
 			log.Printf("Error parsing DNS response: %v", err)
-			return false, "", err
+			continue
 		}
 
 		if banner != "" {
@@ -96,10 +97,11 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 		}
 	}
 
-	return true, "", nil
+	return false, "", fmt.Errorf("failed to get valid DNS response after 3 attempts")
 }
 
 func parseDNSResponse(response []byte) (string, error) {
+	log.Printf("Raw DNS response: %x", response)
 	reader := bytes.NewReader(response)
 
 	// Skip the header (12 bytes)
@@ -135,7 +137,7 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 
 	if answerType != 0x0010 { // Check if the answer type is TXT (0x0010)
-		return "", nil
+		return "", fmt.Errorf("unexpected answer type: %x", answerType)
 	}
 
 	// Skip the answer class, TTL, and RDLength (8 bytes)
@@ -153,7 +155,12 @@ func parseDNSResponse(response []byte) (string, error) {
 		return "", err
 	}
 
-	return string(txtData[1:]), nil
+	log.Printf("TXT Data: %x", txtData)
+	if len(txtData) > 0 {
+		return string(txtData[1:]), nil
+	}
+
+	return "", fmt.Errorf("no TXT data found")
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
