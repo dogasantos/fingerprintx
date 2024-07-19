@@ -1,4 +1,4 @@
-module github.com/praetorian-inc/fingerprintx
+module github.com/dogasantos/fingerprintx
 
 go 1.20
 
