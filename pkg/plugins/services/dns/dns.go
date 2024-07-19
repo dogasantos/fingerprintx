@@ -7,8 +7,8 @@ import (
 	"net"
 	"time"
 
-	utils "github.com.praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
 
 	"github.com/miekg/dns"
 )
