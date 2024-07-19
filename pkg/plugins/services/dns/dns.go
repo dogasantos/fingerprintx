@@ -105,57 +105,67 @@ func parseDNSResponse(response []byte) (string, error) {
 	reader := bytes.NewReader(response)
 
 	// Skip the header (12 bytes)
-	if _, err := reader.Seek(12, 0); err != nil {
-		return "", err
+	header := make([]byte, 12)
+	if _, err := reader.Read(header); err != nil {
+		return "", fmt.Errorf("error reading DNS header: %w", err)
 	}
+	log.Printf("DNS header: %x", header)
 
-	// Skip the question section (variable length)
+	// Read the question section (variable length)
 	for {
 		var length byte
 		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
-			return "", err
+			return "", fmt.Errorf("error reading question section length: %w", err)
 		}
 
 		if length == 0 {
 			break
 		}
 
-		if _, err := reader.Seek(int64(length), 1); err != nil {
-			return "", err
+		question := make([]byte, length)
+		if _, err := reader.Read(question); err != nil {
+			return "", fmt.Errorf("error reading question section: %w", err)
 		}
+		log.Printf("DNS question section: %x", question)
 	}
 
 	// Skip the question type and class (4 bytes)
-	if _, err := reader.Seek(4, 1); err != nil {
-		return "", err
+	qTypeClass := make([]byte, 4)
+	if _, err := reader.Read(qTypeClass); err != nil {
+		return "", fmt.Errorf("error reading question type/class: %w", err)
 	}
+	log.Printf("DNS question type/class: %x", qTypeClass)
 
 	// Read the answer section
 	var answerType uint16
 	if err := binary.Read(reader, binary.BigEndian, &answerType); err != nil {
-		return "", err
+		return "", fmt.Errorf("error reading answer type: %w", err)
 	}
+	log.Printf("DNS answer type: %x", answerType)
 
 	if answerType != 0x0010 { // Check if the answer type is TXT (0x0010)
 		return "", fmt.Errorf("unexpected answer type: %x", answerType)
 	}
 
 	// Skip the answer class, TTL, and RDLength (8 bytes)
-	if _, err := reader.Seek(8, 1); err != nil {
-		return "", err
+	answerMeta := make([]byte, 8)
+	if _, err := reader.Read(answerMeta); err != nil {
+		return "", fmt.Errorf("error reading answer metadata: %w", err)
 	}
+	log.Printf("DNS answer metadata: %x", answerMeta)
 
 	var rdLength uint16
 	if err := binary.Read(reader, binary.BigEndian, &rdLength); err != nil {
-		return "", err
+		return "", fmt.Errorf("error reading RDLength: %w", err)
 	}
+	log.Printf("DNS RDLength: %x", rdLength)
 
 	txtData := make([]byte, rdLength)
 	if _, err := reader.Read(txtData); err != nil {
-		return "", err
+		return "", fmt.Errorf("error reading TXT data: %w", err)
 	}
-
 	log.Printf("TXT Data: %x", txtData)
+
 	if len(txtData) > 0 {
 		return string(txtData[1:]), nil
 	}
