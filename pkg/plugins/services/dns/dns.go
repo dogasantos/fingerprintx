@@ -16,10 +16,11 @@ package dns
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
+	"log"
 	"net"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
 )
@@ -60,38 +61,99 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 
 		response, err := utils.SendRecv(conn, InitialConnectionPackage, timeout)
 		if err != nil {
+			log.Printf("Error sending/receiving DNS query: %v", err)
 			return false, "", err
 		}
 
 		if len(response) == 0 {
+			log.Printf("Received empty response")
 			return false, "", nil
 		}
 
 		if conn.RemoteAddr().Network() == "udp" {
 			if !bytes.Equal(transactionID[0:1], response[0:1]) {
+				log.Printf("Transaction ID mismatch for UDP response")
 				return false, "", nil
 			}
 		}
 
 		if conn.RemoteAddr().Network() == "tcp" {
 			if !bytes.Equal(transactionID[0:1], response[2:3]) {
+				log.Printf("Transaction ID mismatch for TCP response")
 				return false, "", nil
 			}
 		}
 
-		msg := new(dns.Msg)
-		if err := msg.Unpack(response); err != nil {
+		// Parse the response manually
+		banner, err := parseDNSResponse(response)
+		if err != nil {
+			log.Printf("Error parsing DNS response: %v", err)
 			return false, "", err
 		}
 
-		for _, answer := range msg.Answer {
-			if txt, ok := answer.(*dns.TXT); ok {
-				return true, "version.bind: " + txt.Txt[0], nil
-			}
+		if banner != "" {
+			return true, banner, nil
 		}
 	}
 
 	return true, "", nil
+}
+
+func parseDNSResponse(response []byte) (string, error) {
+	reader := bytes.NewReader(response)
+
+	// Skip the header (12 bytes)
+	if _, err := reader.Seek(12, 0); err != nil {
+		return "", err
+	}
+
+	// Skip the question section (variable length)
+	for {
+		var length byte
+		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
+			return "", err
+		}
+
+		if length == 0 {
+			break
+		}
+
+		if _, err := reader.Seek(int64(length), 1); err != nil {
+			return "", err
+		}
+	}
+
+	// Skip the question type and class (4 bytes)
+	if _, err := reader.Seek(4, 1); err != nil {
+		return "", err
+	}
+
+	// Read the answer section
+	var answerType uint16
+	if err := binary.Read(reader, binary.BigEndian, &answerType); err != nil {
+		return "", err
+	}
+
+	if answerType != 0x0010 { // Check if the answer type is TXT (0x0010)
+		return "", nil
+	}
+
+	// Skip the answer class, TTL, and RDLength (8 bytes)
+	if _, err := reader.Seek(8, 1); err != nil {
+		return "", err
+	}
+
+	var rdLength uint16
+	if err := binary.Read(reader, binary.BigEndian, &rdLength); err != nil {
+		return "", err
+	}
+
+	txtData := make([]byte, rdLength)
+	if _, err := reader.Read(txtData); err != nil {
+		return "", err
+	}
+
+	return string(txtData[1:]), nil
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
