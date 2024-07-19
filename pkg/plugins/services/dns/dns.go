@@ -48,6 +48,13 @@ func sendDNSQuery(conn net.Conn, timeout time.Duration) ([]byte, error) {
 	conn.SetDeadline(time.Now().Add(timeout))
 
 	message := createDNSQueryMessage()
+
+	if conn.RemoteAddr().Network() == "tcp" {
+		length := make([]byte, 2)
+		binary.BigEndian.PutUint16(length, uint16(len(message)))
+		message = append(length, message...)
+	}
+
 	if _, err := conn.Write(message); err != nil {
 		return nil, err
 	}
