@@ -324,39 +324,18 @@ func matchAuthPluginError(errorStr, plugin string) bool {
 
 // attemptSSLConnection tries to establish an SSL connection
 func attemptSSLConnection(conn net.Conn, timeout time.Duration) error {
-	clientHello := buildSSLClientHello()
-	_, err := conn.Write(clientHello)
-	if err != nil {
-		return err
-	}
-
-	response, err := utils.Recv(conn, timeout)
-	if err != nil {
-		return err
-	}
-
-	return parseSSLResponse(response)
-}
-
-// buildSSLClientHello builds an SSL ClientHello packet
-func buildSSLClientHello() []byte {
-	clientHello := tls.ClientHelloInfo{
+	config := &tls.Config{
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, // MySQL 5.7 and 8.0
 			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,    // MySQL 5.6
 			tls.TLS_AES_256_GCM_SHA384,                // MySQL 8.0.16+
 		},
-	}
-
-	config := &tls.Config{
-		CipherSuites:       clientHello.CipherSuites,
 		InsecureSkipVerify: true,
 	}
-
-	conn := tls.Client(conn, config)
+	tlsConn := tls.Client(conn, config)
 
 	// Perform handshake to trigger sending ClientHello
-	err := conn.Handshake()
+	err := tlsConn.Handshake()
 	if err != nil {
 		return err
 	}
