@@ -92,12 +92,15 @@ func parseDNSResponse(response []byte) (string, error) {
 
 	msg := new(dns.Msg)
 	if err := msg.Unpack(response); err != nil {
+		log.Printf("Error unpacking DNS response: %v", err)
 		return "", fmt.Errorf("error unpacking DNS response: %w", err)
 	}
 
 	for _, answer := range msg.Answer {
 		if txt, ok := answer.(*dns.TXT); ok {
-			return "version.bind: " + txt.Txt[0], nil
+			if len(txt.Txt) > 0 {
+				return "version.bind: " + txt.Txt[0], nil
+			}
 		}
 	}
 
