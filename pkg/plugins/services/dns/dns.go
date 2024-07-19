@@ -1,15 +1,12 @@
 package dns
 
 import (
-	"crypto/rand"
 	"fmt"
 	"log"
 	"net"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
-	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
-
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 	"github.com/miekg/dns"
 )
 
@@ -25,21 +22,15 @@ func init() {
 
 func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 	for attempts := 0; attempts < 3; attempts++ {
-		message := new(dns.Msg)
-		message.SetQuestion("version.bind.", dns.TypeTXT)
-		message.RecursionDesired = true
-
-		transactionID := make([]byte, 2)
-		_, err := rand.Read(transactionID)
-		if err != nil {
-			return false, "", &utils.RandomizeError{Message: "Transaction ID"}
-		}
-		message.Id = uint16(transactionID[0])<<8 | uint16(transactionID[1])
-
 		client := &dns.Client{
 			Net:     conn.RemoteAddr().Network(),
 			Timeout: timeout,
 		}
+
+		message := new(dns.Msg)
+		message.SetQuestion(dns.Fqdn("version.bind."), dns.TypeTXT)
+		message.RecursionDesired = false
+		message.Id = dns.Id()
 
 		addr := conn.RemoteAddr().String()
 		in, _, err := client.Exchange(message, addr)
@@ -48,7 +39,7 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 			continue
 		}
 
-		// Parse the response using github.com/miekg/dns
+		// Parse the response
 		banner, err := parseDNSResponse(in)
 		if err != nil {
 			log.Printf("Error parsing DNS response: %v", err)
