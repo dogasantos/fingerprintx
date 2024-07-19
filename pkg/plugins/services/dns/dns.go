@@ -98,7 +98,7 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 	log.Printf("DNS header: %x", header)
 
-	// Read the question section (variable length)
+	// Skip the question section
 	for {
 		var length byte
 		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
@@ -121,9 +121,8 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 	log.Printf("DNS question type/class: %x", qTypeClass)
 
-	// Read the answer name (handle compression)
-	_, err := readName(reader)
-	if err != nil {
+	// Read the answer section
+	if _, err := readName(reader); err != nil {
 		return "", fmt.Errorf("error reading answer name: %w", err)
 	}
 
@@ -164,23 +163,33 @@ func parseDNSResponse(response []byte) (string, error) {
 	return "", fmt.Errorf("no TXT data found")
 }
 
-func readName(reader *bytes.Reader) ([]byte, error) {
+func readName(reader *bytes.Reader) (string, error) {
 	var name []byte
-
 	for {
 		var length byte
 		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
-			return nil, fmt.Errorf("error reading name length: %w", err)
+			return "", fmt.Errorf("error reading name length: %w", err)
 		}
 
-		// Check for name compression
+		// Check for name compression (pointer)
 		if length&0xc0 == 0xc0 {
-			var offset byte
-			if err := binary.Read(reader, binary.BigEndian, &offset); err != nil {
-				return nil, fmt.Errorf("error reading name offset: %w", err)
+			var pointerOffset byte
+			if err := binary.Read(reader, binary.BigEndian, &pointerOffset); err != nil {
+				return "", fmt.Errorf("error reading name pointer: %w", err)
 			}
-			// Use the offset to read the name (not implemented here for simplicity)
-			name = append(name, length, offset)
+			log.Printf("DNS answer name pointer: %x%x", length, pointerOffset)
+			// Handle the pointer correctly
+			offset := ((uint16(length) & 0x3f) << 8) | uint16(pointerOffset)
+			currentPos, _ := reader.Seek(0, 1)
+			if _, err := reader.Seek(int64(offset), 0); err != nil {
+				return "", fmt.Errorf("error seeking to pointer offset: %w", err)
+			}
+			if _, err := readName(reader); err != nil {
+				return "", fmt.Errorf("error reading pointed-to name: %w", err)
+			}
+			if _, err := reader.Seek(currentPos, 0); err != nil {
+				return "", fmt.Errorf("error seeking back to current position: %w", err)
+			}
 			break
 		}
 
@@ -190,13 +199,13 @@ func readName(reader *bytes.Reader) ([]byte, error) {
 
 		part := make([]byte, length)
 		if _, err := reader.Read(part); err != nil {
-			return nil, fmt.Errorf("error reading name part: %w", err)
+			return "", fmt.Errorf("error reading name part: %w", err)
 		}
 		name = append(name, part...)
 		name = append(name, '.')
 	}
 
-	return name, nil
+	return string(name), nil
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
