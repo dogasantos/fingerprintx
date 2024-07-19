@@ -6,8 +6,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
 	"github.com/miekg/dns"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
 const DNS = "dns"
