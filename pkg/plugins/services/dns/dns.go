@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/paulstuart/dnsquery"
+	"github.com/miekg/dns"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
@@ -22,14 +22,28 @@ func init() {
 
 func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 	for attempts := 0; attempts < 3; attempts++ {
-		response, err := sendDNSQuery(conn, timeout)
+		client := &dns.Client{
+			Net:     conn.RemoteAddr().Network(),
+			Timeout: timeout,
+		}
+
+		message := new(dns.Msg)
+		message.SetQuestion(dns.Fqdn("version.bind."), dns.TypeTXT)
+		message.Question[0].Qclass = dns.ClassCHAOS
+		message.RecursionDesired = false
+		message.Id = dns.Id()
+
+		addr := conn.RemoteAddr().String()
+		in, rtt, err := client.Exchange(message, addr)
 		if err != nil {
-			log.Printf("Error sending DNS query: %v", err)
+			log.Printf("Error exchanging DNS query: %v", err)
 			continue
 		}
 
+		log.Printf("DNS query RTT: %v", rtt)
+
 		// Parse the response
-		banner, err := parseDNSResponse(response)
+		banner, err := parseDNSResponse(in)
 		if err != nil {
 			log.Printf("Error parsing DNS response: %v", err)
 			continue
@@ -43,41 +57,13 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 	return false, "", fmt.Errorf("failed to get valid DNS response after 3 attempts")
 }
 
-func sendDNSQuery(conn net.Conn, timeout time.Duration) ([]byte, error) {
-	resolver := dnsquery.NewResolver(conn.RemoteAddr().String())
-	resolver.RetryTimes = 3
-	resolver.QueryTimeout = timeout
-
-	query := dnsquery.Query{
-		Name:  "version.bind",
-		Type:  dnsquery.TypeTXT,
-		Class: dnsquery.ClassCHAOS,
-	}
-
-	response, err := resolver.Lookup(query)
-	if err != nil {
-		return nil, err
-	}
-
-	return response.Raw, nil
-}
-
-func parseDNSResponse(response []byte) (string, error) {
-	log.Printf("Raw DNS response: %x", response)
-
-	if len(response) < 12 {
-		return "", fmt.Errorf("invalid DNS response")
-	}
-
-	parsed, err := dnsquery.Parse(response)
-	if err != nil {
-		return "", fmt.Errorf("error parsing DNS response: %v", err)
-	}
-
-	for _, answer := range parsed.Answers {
-		if answer.Type == dnsquery.TypeTXT && answer.Name == "version.bind." {
-			if len(answer.Data) > 0 {
-				return answer.Data, nil
+func parseDNSResponse(msg *dns.Msg) (string, error) {
+	log.Printf("Parsing DNS response: %v", msg)
+	for _, answer := range msg.Answer {
+		log.Printf("Answer: %v", answer)
+		if txt, ok := answer.(*dns.TXT); ok && txt.Hdr.Name == "version.bind." && txt.Hdr.Class == dns.ClassCHAOS {
+			if len(txt.Txt) > 0 {
+				return txt.Txt[0], nil
 			}
 		}
 	}
