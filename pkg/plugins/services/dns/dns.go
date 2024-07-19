@@ -77,8 +77,10 @@ func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Tar
 	}
 
 	if isDNS {
-		payload := plugins.ServiceDNS{}
-		return plugins.CreateServiceFrom(target, payload, false, banner, plugins.UDP), nil
+		payload := plugins.ServiceDNS{
+			Banner: banner,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, "", plugins.UDP), nil
 	}
 
 	return nil, nil
@@ -103,8 +105,10 @@ func (p TCPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Targ
 	}
 
 	if isDNS {
-		payload := plugins.ServiceDNS{}
-		return plugins.CreateServiceFrom(target, payload, false, banner, plugins.TCP), nil
+		payload := plugins.ServiceDNS{
+			Banner: banner,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 	}
 
 	return nil, nil
