@@ -3,6 +3,7 @@ package dns
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -72,7 +73,7 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 			}
 		}
 
-		// Parse the response using github.com/miekg/dns
+		// Parse the response manually
 		banner, err := parseDNSResponse(response)
 		if err != nil {
 			log.Printf("Error parsing DNS response: %v", err)
@@ -90,17 +91,74 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 func parseDNSResponse(response []byte) (string, error) {
 	log.Printf("Raw DNS response: %x", response)
 
-	msg := new(dns.Msg)
-	if err := msg.Unpack(response); err != nil {
-		log.Printf("Error unpacking DNS response: %v", err)
-		return "", fmt.Errorf("error unpacking DNS response: %w", err)
+	reader := bytes.NewReader(response)
+	var header dns.MsgHdr
+	if err := binary.Read(reader, binary.BigEndian, &header); err != nil {
+		return "", fmt.Errorf("error reading DNS header: %w", err)
+	}
+	log.Printf("DNS header: %+v", header)
+
+	questionCount := header.Qdcount
+	for i := uint16(0); i < questionCount; i++ {
+		_, err := dns.NewName(reader)
+		if err != nil {
+			return "", fmt.Errorf("error reading DNS question name: %w", err)
+		}
+		var questionType uint16
+		var questionClass uint16
+		if err := binary.Read(reader, binary.BigEndian, &questionType); err != nil {
+			return "", fmt.Errorf("error reading DNS question type: %w", err)
+		}
+		if err := binary.Read(reader, binary.BigEndian, &questionClass); err != nil {
+			return "", fmt.Errorf("error reading DNS question class: %w", err)
+		}
+		log.Printf("DNS question type: %d, class: %d", questionType, questionClass)
 	}
 
-	for _, answer := range msg.Answer {
-		if txt, ok := answer.(*dns.TXT); ok {
-			if len(txt.Txt) > 0 {
-				return "version.bind: " + txt.Txt[0], nil
+	answerCount := header.Ancount
+	for i := uint16(0); i < answerCount; i++ {
+		name, err := dns.NewName(reader)
+		if err != nil {
+			return "", fmt.Errorf("error reading DNS answer name: %w", err)
+		}
+		log.Printf("DNS answer name: %s", name)
+
+		var answerType uint16
+		var answerClass uint16
+		var ttl uint32
+		var rdlength uint16
+		if err := binary.Read(reader, binary.BigEndian, &answerType); err != nil {
+			return "", fmt.Errorf("error reading DNS answer type: %w", err)
+		}
+		if err := binary.Read(reader, binary.BigEndian, &answerClass); err != nil {
+			return "", fmt.Errorf("error reading DNS answer class: %w", err)
+		}
+		if err := binary.Read(reader, binary.BigEndian, &ttl); err != nil {
+			return "", fmt.Errorf("error reading DNS answer TTL: %w", err)
+		}
+		if err := binary.Read(reader, binary.BigEndian, &rdlength); err != nil {
+			return "", fmt.Errorf("error reading DNS answer RDLength: %w", err)
+		}
+		log.Printf("DNS answer type: %d, class: %d, ttl: %d, rdlength: %d", answerType, answerClass, ttl, rdlength)
+
+		rdata := make([]byte, rdlength)
+		if _, err := reader.Read(rdata); err != nil {
+			return "", fmt.Errorf("error reading DNS answer RData: %w", err)
+		}
+
+		if answerType == dns.TypeTXT {
+			txt := dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:     name,
+					Rrtype:   answerType,
+					Class:    answerClass,
+					Ttl:      ttl,
+					Rdlength: rdlength,
+				},
+				Txt: []string{string(rdata)},
 			}
+			log.Printf("TXT Record: %s", txt.Txt)
+			return "version.bind: " + txt.Txt[0], nil
 		}
 	}
 
