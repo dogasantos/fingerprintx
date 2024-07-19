@@ -4,14 +4,13 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//      http://www.apache.org/licenses/LICENSE-2.0
+//	http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 package dns
 
 import (
@@ -20,6 +19,7 @@ import (
 	"net"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
 )
@@ -34,12 +34,12 @@ func init() {
 	plugins.RegisterPlugin(&TCPPlugin{})
 }
 
-func CheckDNS(conn net.Conn, timeout time.Duration) (bool, error) {
+func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 	for attempts := 0; attempts < 3; attempts++ {
 		transactionID := make([]byte, 2)
 		_, err := rand.Read(transactionID)
 		if err != nil {
-			return false, &utils.RandomizeError{Message: "Transaction ID"}
+			return false, "", &utils.RandomizeError{Message: "Transaction ID"}
 		}
 
 		InitialConnectionPackage := append(transactionID, []byte{ //nolint:gocritic
@@ -60,38 +60,49 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, error) {
 
 		response, err := utils.SendRecv(conn, InitialConnectionPackage, timeout)
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 
 		if len(response) == 0 {
-			return false, nil
+			return false, "", nil
 		}
 
 		if conn.RemoteAddr().Network() == "udp" {
 			if !bytes.Equal(transactionID[0:1], response[0:1]) {
-				return false, nil
+				return false, "", nil
 			}
 		}
 
 		if conn.RemoteAddr().Network() == "tcp" {
 			if !bytes.Equal(transactionID[0:1], response[2:3]) {
-				return false, nil
+				return false, "", nil
+			}
+		}
+
+		msg := new(dns.Msg)
+		if err := msg.Unpack(response); err != nil {
+			return false, "", err
+		}
+
+		for _, answer := range msg.Answer {
+			if txt, ok := answer.(*dns.TXT); ok {
+				return true, "version.bind: " + txt.Txt[0], nil
 			}
 		}
 	}
 
-	return true, nil
+	return true, "", nil
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	isDNS, err := CheckDNS(conn, timeout)
+	isDNS, banner, err := CheckDNS(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
 
 	if isDNS {
 		payload := plugins.ServiceDNS{}
-		return plugins.CreateServiceFrom(target, payload, false, "", plugins.UDP), nil
+		return plugins.CreateServiceFrom(target, payload, false, banner, plugins.UDP), nil
 	}
 
 	return nil, nil
@@ -110,15 +121,14 @@ func (p *UDPPlugin) Type() plugins.Protocol {
 }
 
 func (p TCPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	isDNS, err := CheckDNS(conn, timeout)
+	isDNS, banner, err := CheckDNS(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
 
 	if isDNS {
 		payload := plugins.ServiceDNS{}
-
-		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		return plugins.CreateServiceFrom(target, payload, false, banner, plugins.TCP), nil
 	}
 
 	return nil, nil
