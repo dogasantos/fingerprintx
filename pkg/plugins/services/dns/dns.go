@@ -98,7 +98,7 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 	log.Printf("DNS header: %x", header)
 
-	// Read the question section (variable length)
+	// Skip the question section
 	for {
 		var length byte
 		if err := binary.Read(reader, binary.BigEndian, &length); err != nil {
@@ -109,11 +109,9 @@ func parseDNSResponse(response []byte) (string, error) {
 			break
 		}
 
-		question := make([]byte, length)
-		if _, err := reader.Read(question); err != nil {
-			return "", fmt.Errorf("error reading question section: %w", err)
+		if _, err := reader.Seek(int64(length), 1); err != nil {
+			return "", fmt.Errorf("error skipping question section: %w", err)
 		}
-		log.Printf("DNS question section: %x", question)
 	}
 
 	// Skip the question type and class (4 bytes)
@@ -123,14 +121,18 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 	log.Printf("DNS question type/class: %x", qTypeClass)
 
-	// Skip the answer name (2 bytes)
-	answerName := make([]byte, 2)
-	if _, err := reader.Read(answerName); err != nil {
+	// Read the answer section
+	var nameLength byte
+	if err := binary.Read(reader, binary.BigEndian, &nameLength); err != nil {
+		return "", fmt.Errorf("error reading answer name length: %w", err)
+	}
+	log.Printf("DNS answer name length: %x", nameLength)
+
+	// Skip the answer name (variable length)
+	if _, err := reader.Seek(int64(nameLength), 1); err != nil {
 		return "", fmt.Errorf("error reading answer name: %w", err)
 	}
-	log.Printf("DNS answer name: %x", answerName)
 
-	// Read the answer type (2 bytes)
 	var answerType uint16
 	if err := binary.Read(reader, binary.BigEndian, &answerType); err != nil {
 		return "", fmt.Errorf("error reading answer type: %w", err)
