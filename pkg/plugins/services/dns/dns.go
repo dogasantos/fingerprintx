@@ -8,8 +8,9 @@ import (
 	"time"
 
 	utils "github.com.praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
-	"github.com/miekg/dns"
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+
+	"github.com/miekg/dns"
 )
 
 const DNS = "dns"
