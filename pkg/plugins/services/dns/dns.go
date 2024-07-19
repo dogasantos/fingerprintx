@@ -2,7 +2,6 @@ package dns
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"time"
 
@@ -34,18 +33,18 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 		message.Id = dns.Id()
 
 		addr := conn.RemoteAddr().String()
-		in, rtt, err := client.Exchange(message, addr)
+		in, _, err := client.Exchange(message, addr)
 		if err != nil {
-			log.Printf("Error exchanging DNS query: %v", err)
+			//log.Printf("Error exchanging DNS query: %v", err)
 			continue
 		}
 
-		log.Printf("DNS query RTT: %v", rtt)
+		//log.Printf("DNS query RTT: %v", rtt)
 
 		// Parse the response
 		banner, err := parseDNSResponse(in)
 		if err != nil {
-			log.Printf("Error parsing DNS response: %v", err)
+			//log.Printf("Error parsing DNS response: %v", err)
 			continue
 		}
 
@@ -58,9 +57,9 @@ func CheckDNS(conn net.Conn, timeout time.Duration) (bool, string, error) {
 }
 
 func parseDNSResponse(msg *dns.Msg) (string, error) {
-	log.Printf("Parsing DNS response: %v", msg)
+	//log.Printf("Parsing DNS response: %v", msg)
 	for _, answer := range msg.Answer {
-		log.Printf("Answer: %v", answer)
+		//log.Printf("Answer: %v", answer)
 		if txt, ok := answer.(*dns.TXT); ok && txt.Hdr.Name == "version.bind." && txt.Hdr.Class == dns.ClassCHAOS {
 			if len(txt.Txt) > 0 {
 				return txt.Txt[0], nil
