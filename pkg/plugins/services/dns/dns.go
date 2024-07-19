@@ -97,14 +97,14 @@ func parseDNSResponse(response []byte) (string, error) {
 	}
 
 	for _, answer := range msg.Answer {
-		if txt, ok := answer.(*dns.TXT); ok {
+		if txt, ok := answer.(*dns.TXT); ok && txt.Hdr.Name == "version.bind." {
 			if len(txt.Txt) > 0 {
-				return "version.bind: " + txt.Txt[0], nil
+				return txt.Txt[0], nil
 			}
 		}
 	}
 
-	return "", fmt.Errorf("no TXT records found")
+	return "", fmt.Errorf("version.bind TXT record not found")
 }
 
 func (p *UDPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
