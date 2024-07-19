@@ -404,7 +404,7 @@ type ServiceRedis struct {
 func (e ServiceRedis) Type() string { return ProtoRedis }
 
 type ServiceFTP struct {
-	Banner         string `json:"banner"`
+	Banner string `json:"banner"`
 }
 
 func (e ServiceFTP) Type() string { return ProtoFTP }
@@ -476,7 +476,9 @@ type ServiceRtsp struct {
 
 func (e ServiceRtsp) Type() string { return ProtoRtsp }
 
-type ServiceDNS struct{}
+type ServiceDNS struct {
+	Banner string `json:"banner,omitempty"`
+}
 
 func (e ServiceDNS) Type() string { return ProtoDNS }
 
