@@ -29,47 +29,50 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		return nil, err
 	}
 
-	payload := plugins.ServiceMySQL{
-		PacketType:   "version_detection",
-		ErrorMessage: "",
-		ErrorCode:    0,
-		Version:      version,
+	response, err := utils.Recv(conn, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if len(response) == 0 {
+		return nil, nil
 	}
 
-	return plugins.CreateServiceFrom(target, payload, false, version, plugins.TCP), nil
+	mysqlVersionStr, err := checkInitialHandshakePacket(response)
+	if err == nil {
+		payload := plugins.ServiceMySQL{
+			PacketType:   "handshake",
+			ErrorMessage: "",
+			ErrorCode:    0,
+			Version:      version,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, mysqlVersionStr, plugins.TCP), nil
+	}
+
+	errorStr, errorCode, err := checkErrorMessagePacket(response)
+	if err == nil {
+		payload := plugins.ServiceMySQL{
+			PacketType:   "error",
+			ErrorMessage: errorStr,
+			ErrorCode:    errorCode,
+			Version:      version,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+	}
+
+	return nil, nil
 }
 
 func (p *MYSQLPlugin) detectVersion(conn net.Conn, timeout time.Duration) (string, error) {
-	response, err := utils.Recv(conn, timeout)
+	// Try SSL/TLS connection and analyze response
+	err := attemptSSLConnection(conn, timeout)
 	if err != nil {
-		return "", err
-	}
-	if len(response) == 0 {
-		return "", nil
-	}
-
-	// Try to get version from initial handshake packet
-	version, err := checkInitialHandshakePacket(response)
-	if err == nil {
-		return version, nil
-	}
-
-	// If initial handshake doesn't work, perform additional tests
-	errorStr, errorCode, err := checkErrorMessagePacket(response)
-	if err == nil {
-		// Analyze error message to infer version
-		version := analyzeErrorMessage(errorStr, errorCode)
+		version := analyzeSSLError(err.Error())
 		if version != "" {
 			return version, nil
 		}
 	}
 
-	// Perform additional tests if necessary
-	return p.performAdditionalTests(conn, timeout)
-}
-
-func (p *MYSQLPlugin) performAdditionalTests(conn net.Conn, timeout time.Duration) (string, error) {
-	// Example: Try different authentication methods and analyze responses
+	// Try different authentication methods and analyze responses
 	authMethods := []string{"mysql_native_password", "caching_sha2_password"}
 	for _, authMethod := range authMethods {
 		err := attemptAuthMethod(conn, timeout, authMethod)
@@ -81,33 +84,8 @@ func (p *MYSQLPlugin) performAdditionalTests(conn net.Conn, timeout time.Duratio
 		}
 	}
 
-	// Example: Try SSL/TLS connection and analyze response
-	err := attemptSSLConnection(conn, timeout)
-	if err != nil {
-		version := analyzeSSLError(err.Error())
-		if version != "" {
-			return version, nil
-		}
-	}
-
-	// Add more tests as needed
-	return "", fmt.Errorf("unable to detect MySQL version")
-}
-
-func (p *MYSQLPlugin) PortPriority(port uint16) bool {
-	return port == 3306
-}
-
-func (p *MYSQLPlugin) Name() string {
-	return MYSQL
-}
-
-func (p *MYSQLPlugin) Type() plugins.Protocol {
-	return plugins.TCP
-}
-
-func (p *MYSQLPlugin) Priority() int {
-	return 133
+	// If no version detected from specific checks, return generic version
+	return "unknown", fmt.Errorf("unable to detect MySQL version")
 }
 
 func checkErrorMessagePacket(response []byte) (string, int, error) {
