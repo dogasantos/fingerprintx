@@ -238,5 +238,5 @@ func (p *NFSPlugin) Type() plugins.Protocol {
 }
 
 func (p *NFSPlugin) Priority() int {
-	return 2000
+	return 1000
 }
