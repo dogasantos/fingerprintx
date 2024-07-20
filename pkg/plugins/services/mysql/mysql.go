@@ -49,8 +49,10 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 	}
 
 	mysqlVersionStr, versionErr := checkInitialHandshakePacket(response)
+	var version string
+
 	if versionErr == nil {
-		version, _ := p.detectVersion(conn, timeout)
+		version, _ = p.detectVersion(conn, timeout)
 		payload := plugins.ServiceMySQL{
 			PacketType:   "handshake",
 			ErrorMessage: "",
@@ -62,7 +64,7 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 
 	errorStr, errorCode, err := checkErrorMessagePacket(response)
 	if err == nil {
-		version, _ := p.detectVersion(conn, timeout)
+		version, _ = p.detectVersion(conn, timeout)
 		payload := plugins.ServiceMySQL{
 			PacketType:   "error",
 			ErrorMessage: errorStr,
