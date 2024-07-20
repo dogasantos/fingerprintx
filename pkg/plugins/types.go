@@ -1,16 +1,4 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// types.go
 
 package plugins
 
@@ -76,6 +64,7 @@ const (
 	ProtoStun       = "stun"
 	ProtoTelnet     = "telnet"
 	ProtoVNC        = "vnc"
+	ProtoNFS        = "nfs"
 	ProtoUnknown    = "unknown"
 )
 
@@ -210,6 +199,10 @@ func (e Service) Metadata() Metadata {
 		var p ServicePOP3S
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
+	case ProtoNFS:
+		var p ServiceNFS
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
 	default:
 		var p ServiceUnknown
 		_ = json.Unmarshal(e.Raw, &p)
@@ -264,6 +257,18 @@ type Service struct {
 	Version   string          `json:"version,omitempty"`
 	Raw       json.RawMessage `json:"metadata"`
 }
+
+type ServiceNFS struct {
+	Version             uint32   `json:"version"`                       // e.g., NFS Version
+	Port                uint32   `json:"port"`                          // e.g., NFS Port
+	Banner              string   `json:"banner,omitempty"`              // e.g., Server Banner
+	SupportedProcedures []string `json:"supportedProcedures,omitempty"` // e.g., Supported NFS Procedures
+	Policies            []string `json:"policies,omitempty"`            // e.g., NFS Policies
+	SharedContent       []string `json:"sharedContent,omitempty"`       // e.g., Shared Content
+	AllowedOrigins      []string `json:"allowedOrigins,omitempty"`      // e.g., Allowed Origins
+}
+
+func (e ServiceNFS) Type() string { return ProtoNFS }
 
 type ServiceHTTP struct {
 	Status          string      `json:"status"`     // e.g. "200 OK"
@@ -383,8 +388,7 @@ type ServiceIPSEC struct {
 
 func (e ServiceIPSEC) Type() string { return ProtoIPSEC }
 
-type ServiceMSSQL struct {
-}
+type ServiceMSSQL struct{}
 
 func (e ServiceMSSQL) Type() string { return ProtoMSSQL }
 
