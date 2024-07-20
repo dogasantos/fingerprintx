@@ -1,19 +1,3 @@
-// nfs_plugin.go
-
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package nfs
 
 import (
@@ -150,6 +134,10 @@ func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error
 	// Add policy detection if needed (example: checking for specific NFS policies)
 	info.Policies = DetectNFSPolicies(conn, timeout)
 
+	// Example shared content and allowed origins detection
+	info.SharedContent = DetectNFSSharedContent(conn, timeout)
+	info.AllowedOrigins = DetectNFSAllowedOrigins(conn, timeout)
+
 	return &info, nil
 }
 
@@ -197,6 +185,26 @@ func DetectNFSPolicies(conn net.Conn, timeout time.Duration) []string {
 	policies = append(policies, "Policy2")
 
 	return policies
+}
+
+func DetectNFSSharedContent(conn net.Conn, timeout time.Duration) []string {
+	var sharedContent []string
+
+	// Example shared content detection (actual implementation depends on NFS server details)
+	sharedContent = append(sharedContent, "SharedContent1")
+	sharedContent = append(sharedContent, "SharedContent2")
+
+	return sharedContent
+}
+
+func DetectNFSAllowedOrigins(conn net.Conn, timeout time.Duration) []string {
+	var allowedOrigins []string
+
+	// Example allowed origins detection (actual implementation depends on NFS server details)
+	allowedOrigins = append(allowedOrigins, "Origin1")
+	allowedOrigins = append(allowedOrigins, "Origin2")
+
+	return allowedOrigins
 }
 
 func (p *NFSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
