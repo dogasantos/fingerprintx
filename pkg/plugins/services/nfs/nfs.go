@@ -14,17 +14,17 @@ import (
 
 type NFSPlugin struct{}
 
-const NFS = "nfs"
-
-// NFS Program and Version constants
 const (
-	ProgramID = 100003
-	Version2  = 2
-	Version3  = 3
-	Version4  = 4
+	NFS            = "nfs"
+	ProgramID      = 100003
+	Version2       = 2
+	Version3       = 3
+	Version4       = 4
+	MountProgramID = 100005
+	MountProc3     = 3
+	MountPort      = 111
 )
 
-// Port mapper request structure
 type PortMapperRequest struct {
 	Program uint32
 	Version uint32
@@ -32,20 +32,13 @@ type PortMapperRequest struct {
 	Port    uint32
 }
 
-// Port mapper response structure
 type PortMapperResponse struct {
 	Port uint32
 }
 
-// NFS Procedure request structure
-type NFSProcedureRequest struct {
-	Credential [32]byte // Simplified; actual structure is more complex
-	Verifier   [32]byte // Simplified; actual structure is more complex
-}
-
-// NFS Procedure response structure
-type NFSProcedureResponse struct {
-	Status uint32
+type MountExport struct {
+	DirPath  string
+	HostList []string
 }
 
 func init() {
@@ -59,12 +52,11 @@ func (p *NFSPlugin) PortPriority(port uint16) bool {
 func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error) {
 	info := plugins.ServiceNFS{}
 
-	// Port mapper request for NFS
 	request := PortMapperRequest{
 		Program: ProgramID,
-		Version: Version3, // Start with Version 3
-		Proto:   6,        // TCP protocol
-		Port:    0,        // Port is not specified
+		Version: Version3,
+		Proto:   6,
+		Port:    0,
 	}
 
 	var buf bytes.Buffer
@@ -97,7 +89,6 @@ func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error
 		info.Version = Version3
 		info.Port = portMapperResponse.Port
 	} else {
-		// Try NFS Version 2
 		request.Version = Version2
 		buf.Reset()
 		err = binary.Write(&buf, binary.BigEndian, request)
@@ -124,29 +115,21 @@ func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error
 		return nil, nil
 	}
 
-	// Additional metadata collection for supported procedures
-	procedures, err := DetectSupportedProcedures(conn, timeout, info.Version)
+	exports, err := GetNFSMountExports(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
-	info.SupportedProcedures = procedures
-
-	// Add policy detection if needed (example: checking for specific NFS policies)
-	info.Policies = DetectNFSPolicies(conn, timeout)
-
-	// Example shared content and allowed origins detection
-	info.SharedContent = DetectNFSSharedContent(conn, timeout)
-	info.AllowedOrigins = DetectNFSAllowedOrigins(conn, timeout)
+	info.SharedContent = exports
 
 	return &info, nil
 }
 
-func DetectSupportedProcedures(conn net.Conn, timeout time.Duration, version uint32) ([]string, error) {
-	var procedures []string
-
-	// Example procedure request for detecting NFS procedures
-	request := NFSProcedureRequest{
-		// Fill with appropriate credentials and verifiers
+func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) {
+	request := PortMapperRequest{
+		Program: MountProgramID,
+		Version: MountProc3,
+		Proto:   6,
+		Port:    0,
 	}
 
 	var buf bytes.Buffer
@@ -160,51 +143,78 @@ func DetectSupportedProcedures(conn net.Conn, timeout time.Duration, version uin
 		return nil, err
 	}
 
-	var procedureResponse NFSProcedureResponse
+	if len(response) < 4 {
+		return nil, errors.New("invalid response length")
+	}
+
+	var portMapperResponse PortMapperResponse
 	responseBuf := bytes.NewBuffer(response)
-	err = binary.Read(responseBuf, binary.BigEndian, &procedureResponse)
+	err = binary.Read(responseBuf, binary.BigEndian, &portMapperResponse)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the response to extract supported procedures
-	// Simplified example, actual implementation depends on the NFS version and details
-	if procedureResponse.Status == 0 {
-		procedures = append(procedures, "ProcedureX")
-		// Add more procedures based on response parsing
+	if portMapperResponse.Port == 0 {
+		return nil, errors.New("failed to get mount port")
 	}
 
-	return procedures, nil
+	// Now, get the mount exports
+	mountExports, err := FetchMountExports(conn, portMapperResponse.Port, timeout)
+	if err != nil {
+		return nil, err
+	}
+
+	return mountExports, nil
 }
 
-func DetectNFSPolicies(conn net.Conn, timeout time.Duration) []string {
-	var policies []string
+func FetchMountExports(conn net.Conn, port uint32, timeout time.Duration) ([]string, error) {
+	rpcMsg := struct {
+		XID     uint32
+		Message uint32
+		Program uint32
+		Version uint32
+		Proc    uint32
+		Cred    uint32
+		Verf    uint32
+	}{
+		XID:     0x12345678, // Random transaction ID
+		Message: 0,          // Call message
+		Program: MountProgramID,
+		Version: MountProc3,
+		Proc:    1, // MOUNT_PROC_EXPORT (procedure to get export list)
+		Cred:    0, // AUTH_NULL
+		Verf:    0, // AUTH_NULL
+	}
 
-	// Example policy detection (actual implementation depends on specific NFS policies)
-	policies = append(policies, "Policy1")
-	policies = append(policies, "Policy2")
+	var buf bytes.Buffer
+	err := binary.Write(&buf, binary.BigEndian, rpcMsg)
+	if err != nil {
+		return nil, err
+	}
 
-	return policies
-}
+	// Sending the request to the mount daemon
+	response, err := utils.SendRecv(conn, buf.Bytes(), timeout)
+	if err != nil {
+		return nil, err
+	}
 
-func DetectNFSSharedContent(conn net.Conn, timeout time.Duration) []string {
-	var sharedContent []string
+	if len(response) < 4 {
+		return nil, errors.New("invalid response length")
+	}
 
-	// Example shared content detection (actual implementation depends on NFS server details)
-	sharedContent = append(sharedContent, "SharedContent1")
-	sharedContent = append(sharedContent, "SharedContent2")
+	// Parse the response to extract the export list
+	var exports []string
+	responseBuf := bytes.NewBuffer(response)
+	for responseBuf.Len() > 0 {
+		var export MountExport
+		err := binary.Read(responseBuf, binary.BigEndian, &export)
+		if err != nil {
+			return nil, err
+		}
+		exports = append(exports, export.DirPath)
+	}
 
-	return sharedContent
-}
-
-func DetectNFSAllowedOrigins(conn net.Conn, timeout time.Duration) []string {
-	var allowedOrigins []string
-
-	// Example allowed origins detection (actual implementation depends on NFS server details)
-	allowedOrigins = append(allowedOrigins, "Origin1")
-	allowedOrigins = append(allowedOrigins, "Origin2")
-
-	return allowedOrigins
+	return exports, nil
 }
 
 func (p *NFSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
@@ -228,5 +238,5 @@ func (p *NFSPlugin) Type() plugins.Protocol {
 }
 
 func (p *NFSPlugin) Priority() int {
-	return 1000 // High priority value to ensure it runs first
+	return 2000
 }
