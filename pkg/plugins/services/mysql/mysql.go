@@ -48,33 +48,36 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		return nil, nil
 	}
 
+	mysqlVersionStr, versionErr := checkInitialHandshakePacket(response)
 	var version string
-	var mysqlVersionStr string
 
-	// Try to parse the initial handshake packet
-	if mysqlVersionStr, err = checkInitialHandshakePacket(response); err == nil {
-		version = mysqlVersionStr
+	if versionErr == nil {
+		version, _ = p.detectVersion(conn, timeout)
+		payload := plugins.ServiceMySQL{
+			PacketType:   "handshake",
+			ErrorMessage: "",
+			ErrorCode:    0,
+			Version:      version,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, mysqlVersionStr, plugins.TCP), nil
 	}
 
-	// Try to parse the error message packet
-	if errorStr, errorCode, err := checkErrorMessagePacket(response); err == nil {
+	errorStr, errorCode, err := checkErrorMessagePacket(response)
+	if err == nil {
 		version = analyzeErrorMessage(errorStr, errorCode)
+		if version == "unknown" {
+			version, _ = p.trySSLDetection(conn, timeout)
+		}
+		payload := plugins.ServiceMySQL{
+			PacketType:   "error",
+			ErrorMessage: errorStr,
+			ErrorCode:    errorCode,
+			Version:      version,
+		}
+		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 	}
 
-	// Always run SSL detection logic
-	sslVersion, _ := p.trySSLDetection(conn, timeout)
-	if sslVersion != "unknown" {
-		version = sslVersion
-	}
-
-	payload := plugins.ServiceMySQL{
-		PacketType:   "handshake",
-		ErrorMessage: "",
-		ErrorCode:    0,
-		Version:      version,
-	}
-
-	return plugins.CreateServiceFrom(target, payload, false, version, plugins.TCP), nil
+	return nil, nil
 }
 
 func (p *MYSQLPlugin) detectVersion(conn net.Conn, timeout time.Duration) (string, error) {
