@@ -48,13 +48,9 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		return nil, nil
 	}
 
-	version, err := p.detectVersion(conn, timeout)
-	if err != nil {
-		version = "unknown"
-	}
-
-	mysqlVersionStr, err := checkInitialHandshakePacket(response)
-	if err == nil {
+	mysqlVersionStr, versionErr := checkInitialHandshakePacket(response)
+	if versionErr == nil {
+		version, _ := p.detectVersion(conn, timeout)
 		payload := plugins.ServiceMySQL{
 			PacketType:   "handshake",
 			ErrorMessage: "",
@@ -66,6 +62,7 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 
 	errorStr, errorCode, err := checkErrorMessagePacket(response)
 	if err == nil {
+		version, _ := p.detectVersion(conn, timeout)
 		payload := plugins.ServiceMySQL{
 			PacketType:   "error",
 			ErrorMessage: errorStr,
@@ -337,21 +334,6 @@ func attemptSSLConnection(conn net.Conn, timeout time.Duration) error {
 	return nil
 }
 
-// parseSSLResponse parses the response from an SSL handshake attempt
-func parseSSLResponse(response []byte) error {
-	if len(response) == 0 {
-		return fmt.Errorf("empty response")
-	}
-
-	if response[0] == 0x15 { // SSL Alert
-		return fmt.Errorf("SSL handshake failed: %s", string(response[1:]))
-	} else if response[0] == 0x16 { // SSL Handshake
-		return nil
-	}
-
-	return fmt.Errorf("unexpected SSL response: %v", response)
-}
-
 // analyzeSSLError infers version based on SSL error
 func analyzeSSLError(errorStr string) string {
 	if matchSSLAlertError(errorStr, "handshake failure") {
@@ -365,26 +347,6 @@ func analyzeSSLError(errorStr string) string {
 func matchSSLAlertError(errorStr, alert string) bool {
 	matched, _ := regexp.MatchString(fmt.Sprintf(`SSL handshake failed: %s`, alert), errorStr)
 	return matched
-}
-
-func (p *MYSQLPlugin) detectDetailedVersion(conn net.Conn, baseVersion string) string {
-	switch baseVersion {
-	case "MySQL 5.7":
-		version := p.checkTLSVersion(conn, tls.VersionTLS12)
-		if version == "TLS 1.2" {
-			if p.checkCipherSuite(conn, tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384) {
-				return "MySQL 5.7.x"
-			}
-		}
-	case "MySQL 8.0":
-		version := p.checkTLSVersion(conn, tls.VersionTLS13)
-		if version == "TLS 1.3" {
-			if p.checkCipherSuite(conn, tls.TLS_AES_256_GCM_SHA384) {
-				return "MySQL 8.0.16+"
-			}
-		}
-	}
-	return baseVersion
 }
 
 func (p *MYSQLPlugin) checkTLSVersion(conn net.Conn, version uint16) string {
