@@ -259,13 +259,8 @@ type Service struct {
 }
 
 type ServiceNFS struct {
-	Version             uint32   `json:"version"`                       // e.g., NFS Version
-	Port                uint32   `json:"port"`                          // e.g., NFS Port
-	Banner              string   `json:"banner,omitempty"`              // e.g., Server Banner
-	SupportedProcedures []string `json:"supportedProcedures,omitempty"` // e.g., Supported NFS Procedures
-	Policies            []string `json:"policies,omitempty"`            // e.g., NFS Policies
-	SharedContent       []string `json:"sharedContent,omitempty"`       // e.g., Shared Content
-	AllowedOrigins      []string `json:"allowedOrigins,omitempty"`      // e.g., Allowed Origins
+	VersionDetails string   `json:"versionDetails"`
+	SharedContent  []string `json:"sharedContent"`
 }
 
 func (e ServiceNFS) Type() string { return ProtoNFS }
