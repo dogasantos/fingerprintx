@@ -98,7 +98,7 @@ func checkNFSVersion(conn net.Conn, timeout time.Duration, version uint32) bool 
 	request := PortMapperRequest{
 		Program: ProgramID,
 		Version: version,
-		Proto:   6,
+		Proto:   6, // TCP
 		Port:    0,
 	}
 
@@ -132,7 +132,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	portMapperRequest := PortMapperRequest{
 		Program: MountProgramID,
 		Version: MountProc3,
-		Proto:   6,
+		Proto:   6, // TCP
 		Port:    0,
 	}
 
@@ -163,7 +163,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	}
 
 	// Now, get the mount exports
-	mountExports, err := FetchMountExports(conn, portMapperResponse.Port, timeout)
+	mountExports, err := FetchMountExports(portMapperResponse.Port, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -171,8 +171,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	return mountExports, nil
 }
 
-func FetchMountExports(conn net.Conn, port uint32, timeout time.Duration) ([]string, error) {
-	// Construct RPC message to request the mount exports
+func FetchMountExports(port uint32, timeout time.Duration) ([]string, error) {
 	rpcMsg := struct {
 		XID     uint32
 		Message uint32
@@ -197,8 +196,15 @@ func FetchMountExports(conn net.Conn, port uint32, timeout time.Duration) ([]str
 		return nil, err
 	}
 
+	// Connect to the mount port
+	mountConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", conn.RemoteAddr().String(), port), timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer mountConn.Close()
+
 	// Sending the request to the mount daemon
-	response, err := utils.SendRecv(conn, buf.Bytes(), timeout)
+	response, err := utils.SendRecv(mountConn, buf.Bytes(), timeout)
 	if err != nil {
 		return nil, err
 	}
