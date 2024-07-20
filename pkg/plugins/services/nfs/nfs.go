@@ -52,69 +52,14 @@ func (p *NFSPlugin) PortPriority(port uint16) bool {
 func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error) {
 	info := plugins.ServiceNFS{}
 
-	request := PortMapperRequest{
-		Program: ProgramID,
-		Version: Version3,
-		Proto:   6,
-		Port:    0,
-	}
-
-	var buf bytes.Buffer
-	err := binary.Write(&buf, binary.BigEndian, request)
+	// Get NFS version details
+	versionDetails, err := GetNFSVersionDetails(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
+	info.VersionDetails = versionDetails
 
-	response, err := utils.SendRecv(conn, buf.Bytes(), timeout)
-	if err != nil {
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	if len(response) < 4 {
-		return nil, nil
-	}
-
-	var portMapperResponse PortMapperResponse
-	responseBuf := bytes.NewBuffer(response)
-	err = binary.Read(responseBuf, binary.BigEndian, &portMapperResponse)
-	if err != nil {
-		return nil, err
-	}
-
-	if portMapperResponse.Port != 0 {
-		info.Version = Version3
-		info.Port = portMapperResponse.Port
-	} else {
-		request.Version = Version2
-		buf.Reset()
-		err = binary.Write(&buf, binary.BigEndian, request)
-		if err != nil {
-			return nil, err
-		}
-
-		response, err := utils.SendRecv(conn, buf.Bytes(), timeout)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(response) >= 4 {
-			responseBuf = bytes.NewBuffer(response)
-			err = binary.Read(responseBuf, binary.BigEndian, &portMapperResponse)
-			if err == nil && portMapperResponse.Port != 0 {
-				info.Version = Version2
-				info.Port = portMapperResponse.Port
-			}
-		}
-	}
-
-	if info.Port == 0 {
-		return nil, nil
-	}
-
+	// Get NFS mount exports
 	exports, err := GetNFSMountExports(conn, timeout)
 	if err != nil {
 		return nil, err
@@ -124,8 +69,67 @@ func DetectNFS(conn net.Conn, timeout time.Duration) (*plugins.ServiceNFS, error
 	return &info, nil
 }
 
-func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) {
+func GetNFSVersionDetails(conn net.Conn, timeout time.Duration) (string, error) {
+	var versions []string
+
+	// Check NFS v2
+	if checkNFSVersion(conn, timeout, Version2) {
+		versions = append(versions, "NFSv2")
+	}
+
+	// Check NFS v3
+	if checkNFSVersion(conn, timeout, Version3) {
+		versions = append(versions, "NFSv3")
+	}
+
+	// Check NFS v4
+	if checkNFSVersion(conn, timeout, Version4) {
+		versions = append(versions, "NFSv4")
+	}
+
+	if len(versions) == 0 {
+		return "", errors.New("no supported NFS versions detected")
+	}
+
+	return fmt.Sprintf("%s", versions), nil
+}
+
+func checkNFSVersion(conn net.Conn, timeout time.Duration, version uint32) bool {
 	request := PortMapperRequest{
+		Program: ProgramID,
+		Version: version,
+		Proto:   6,
+		Port:    0,
+	}
+
+	var buf bytes.Buffer
+	err := binary.Write(&buf, binary.BigEndian, request)
+	if err != nil {
+		return false
+	}
+
+	response, err := utils.SendRecv(conn, buf.Bytes(), timeout)
+	if err != nil {
+		return false
+	}
+
+	if len(response) < 4 {
+		return false
+	}
+
+	var portMapperResponse PortMapperResponse
+	responseBuf := bytes.NewBuffer(response)
+	err = binary.Read(responseBuf, binary.BigEndian, &portMapperResponse)
+	if err != nil {
+		return false
+	}
+
+	return portMapperResponse.Port != 0
+}
+
+func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) {
+	// Send port mapper request to get the mount port
+	portMapperRequest := PortMapperRequest{
 		Program: MountProgramID,
 		Version: MountProc3,
 		Proto:   6,
@@ -133,7 +137,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	}
 
 	var buf bytes.Buffer
-	err := binary.Write(&buf, binary.BigEndian, request)
+	err := binary.Write(&buf, binary.BigEndian, portMapperRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -168,6 +172,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 }
 
 func FetchMountExports(conn net.Conn, port uint32, timeout time.Duration) ([]string, error) {
+	// Construct RPC message to request the mount exports
 	rpcMsg := struct {
 		XID     uint32
 		Message uint32
@@ -226,7 +231,7 @@ func (p *NFSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Tar
 		return nil, nil
 	}
 
-	return plugins.CreateServiceFrom(target, info, false, fmt.Sprintf("NFSv%d", info.Version), plugins.TCP), nil
+	return plugins.CreateServiceFrom(target, info, false, info.VersionDetails, plugins.TCP), nil
 }
 
 func (p *NFSPlugin) Name() string {
@@ -238,5 +243,5 @@ func (p *NFSPlugin) Type() plugins.Protocol {
 }
 
 func (p *NFSPlugin) Priority() int {
-	return 1000
+	return 1000 // High priority value to ensure it runs first
 }
