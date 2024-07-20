@@ -64,7 +64,10 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 
 	errorStr, errorCode, err := checkErrorMessagePacket(response)
 	if err == nil {
-		version, _ = p.detectVersion(conn, timeout)
+		version = analyzeErrorMessage(errorStr, errorCode)
+		if version == "unknown" {
+			version, _ = p.trySSLDetection(conn, timeout)
+		}
 		payload := plugins.ServiceMySQL{
 			PacketType:   "error",
 			ErrorMessage: errorStr,
@@ -101,6 +104,14 @@ func (p *MYSQLPlugin) detectVersion(conn net.Conn, timeout time.Duration) (strin
 
 	// If no version detected from specific checks, return generic version
 	return "unknown", fmt.Errorf("unable to detect MySQL version")
+}
+
+func (p *MYSQLPlugin) trySSLDetection(conn net.Conn, timeout time.Duration) (string, error) {
+	err := attemptSSLConnection(conn, timeout)
+	if err != nil {
+		return analyzeSSLError(err.Error()), nil
+	}
+	return "unknown", fmt.Errorf("unable to detect MySQL version with SSL")
 }
 
 func checkErrorMessagePacket(response []byte) (string, int, error) {
@@ -246,7 +257,7 @@ func analyzeErrorMessage(errorStr string, errorCode int) string {
 		return "MySQL 5.7 or later"
 	}
 	// Add more error message analysis here
-	return ""
+	return "unknown"
 }
 
 // matchHostNotAllowedError matches the "Host 'x.x.x.x' is not allowed" error without hardcoded IP
@@ -306,7 +317,7 @@ func analyzeAuthMethodError(errorStr string) string {
 			return "MySQL 5.7.x"
 		}
 	}
-	return ""
+	return "unknown"
 }
 
 // matchAuthPluginError matches specific auth plugin errors
@@ -342,7 +353,7 @@ func analyzeSSLError(errorStr string) string {
 		return "MySQL 5.7 or later"
 	}
 	// Add more detailed checks for SSL errors here
-	return ""
+	return "unknown"
 }
 
 // matchSSLAlertError matches specific SSL alert errors
