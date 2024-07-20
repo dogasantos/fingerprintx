@@ -48,10 +48,9 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		return nil, nil
 	}
 
-	mysqlVersionStr, versionErr := checkInitialHandshakePacket(response)
 	var version string
 
-	if versionErr == nil {
+	if mysqlVersionStr, versionErr := checkInitialHandshakePacket(response); versionErr == nil {
 		version, _ = p.detectVersion(conn, timeout)
 		payload := plugins.ServiceMySQL{
 			PacketType:   "handshake",
@@ -62,8 +61,7 @@ func (p *MYSQLPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		return plugins.CreateServiceFrom(target, payload, false, version, plugins.TCP), nil
 	}
 
-	errorStr, errorCode, err := checkErrorMessagePacket(response)
-	if err == nil {
+	if errorStr, errorCode, err := checkErrorMessagePacket(response); err == nil {
 		version = analyzeErrorMessage(errorStr, errorCode)
 		if version == "unknown" {
 			version, _ = p.trySSLDetection(conn, timeout)
