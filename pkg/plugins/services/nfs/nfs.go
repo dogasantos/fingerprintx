@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
@@ -91,7 +92,7 @@ func GetNFSVersionDetails(conn net.Conn, timeout time.Duration) (string, error) 
 		return "", errors.New("no supported NFS versions detected")
 	}
 
-	return fmt.Sprintf("%s", versions), nil
+	return strings.Join(versions, ", "), nil
 }
 
 func checkNFSVersion(conn net.Conn, timeout time.Duration, version uint32) bool {
@@ -197,7 +198,7 @@ func FetchMountExports(remoteAddr string, port uint32, timeout time.Duration) ([
 	}
 
 	// Connect to the mount port
-	mountConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", remoteAddr, port), timeout)
+	mountConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", strings.Split(remoteAddr, ":")[0], port), timeout)
 	if err != nil {
 		return nil, err
 	}
