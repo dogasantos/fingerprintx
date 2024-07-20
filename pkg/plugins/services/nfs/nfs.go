@@ -163,7 +163,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	}
 
 	// Now, get the mount exports
-	mountExports, err := FetchMountExports(portMapperResponse.Port, timeout)
+	mountExports, err := FetchMountExports(conn.RemoteAddr().String(), portMapperResponse.Port, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +171,7 @@ func GetNFSMountExports(conn net.Conn, timeout time.Duration) ([]string, error) 
 	return mountExports, nil
 }
 
-func FetchMountExports(port uint32, timeout time.Duration) ([]string, error) {
+func FetchMountExports(remoteAddr string, port uint32, timeout time.Duration) ([]string, error) {
 	rpcMsg := struct {
 		XID     uint32
 		Message uint32
@@ -197,7 +197,7 @@ func FetchMountExports(port uint32, timeout time.Duration) ([]string, error) {
 	}
 
 	// Connect to the mount port
-	mountConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", conn.RemoteAddr().String(), port), timeout)
+	mountConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", remoteAddr, port), timeout)
 	if err != nil {
 		return nil, err
 	}
