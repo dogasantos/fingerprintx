@@ -27,6 +27,7 @@ const (
 	ProtoDNS        = "dns"
 	ProtoDHCP       = "dhcp"
 	ProtoEcho       = "echo"
+	ProtoFGFMSD     = "fgfmsd"
 	ProtoFTP        = "ftp"
 	ProtoHTTP       = "http"
 	ProtoHTTPS      = "https"
@@ -83,6 +84,10 @@ func (e Service) Type() string { return TypeService }
 
 func (e Service) Metadata() Metadata {
 	switch e.Protocol {
+	case ProtoFGFMSD:
+		var p ServiceFGFMSD
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
 	case ProtoFTP:
 		var p ServiceFTP
 		_ = json.Unmarshal(e.Raw, &p)
@@ -408,6 +413,12 @@ type ServiceFTP struct {
 }
 
 func (e ServiceFTP) Type() string { return ProtoFTP }
+
+
+type ServiceFGFMSD struct {
+	Banner string `json:"banner"`
+}
+func (e ServiceFGFMSD) Type() string { return ProtoFGFMSD }
 
 type ServiceSMTP struct {
 	Banner      string   `json:"banner"`
