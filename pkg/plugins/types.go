@@ -133,10 +133,7 @@ func (e Service) Metadata() Metadata {
 		var p ServiceRPC
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
-	case ProtoMSRPC:
-		var p ServiceMSRPC
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
+
 	case ProtoMSSQL:
 		var p ServiceMSSQL
 		_ = json.Unmarshal(e.Raw, &p)
