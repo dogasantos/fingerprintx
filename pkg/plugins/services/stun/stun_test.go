@@ -17,9 +17,9 @@ package stun
 import (
 	"testing"
 
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/dogasantos/fingerprintx/pkg/test"
 	"github.com/ory/dockertest/v3"
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
-	"github.com/praetorian-inc/fingerprintx/pkg/test"
 )
 
 func TestSTUN(t *testing.T) {

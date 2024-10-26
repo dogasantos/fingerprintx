@@ -26,9 +26,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
-	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
-	"github.com/praetorian-inc/fingerprintx/third_party/cryptolib/ssh"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/dogasantos/fingerprintx/third_party/cryptolib/ssh"
 )
 
 type SSHPlugin struct{}

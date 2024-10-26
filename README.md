@@ -5,8 +5,8 @@
 
 <p align="center">
 <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg"></a>
-<a href="https://github.com/praetorian-inc/fingerprintx/issues"><img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat"></a>
-<a href="https://github.com/praetorian-inc/fingerprintx/releases"><img src="https://img.shields.io/badge/version-v1.0.0-blue"></a>
+<a href="https://github.com/dogasantos/fingerprintx/issues"><img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat"></a>
+<a href="https://github.com/dogasantos/fingerprintx/releases"><img src="https://img.shields.io/badge/version-v1.0.0-blue"></a>
 </p>
 
 <p align="center">
@@ -73,11 +73,11 @@ https://user-images.githubusercontent.com/69640071/193334167-8405dd50-f9bf-4386-
 # Installation
 From Github
 ```sh
-go install github.com/praetorian-inc/fingerprintx/cmd/fingerprintx@latest
+go install github.com/dogasantos/fingerprintx/cmd/fingerprintx@latest
 ```
 From source (go version > 1.18)
 ```sh
-$ git clone git@github.com:praetorian-inc/fingerprintx.git
+$ git clone git@github.com:dogasantos/fingerprintx.git
 $ cd fingerprintx
 
 # with go version > 1.18
@@ -87,7 +87,7 @@ $ ./fingerprintx -h
 
 Docker
 ```sh
-$ git clone git@github.com:praetorian-inc/fingerprintx.git
+$ git clone git@github.com:dogasantos/fingerprintx.git
 $ cd fingerprintx
 
 # build
