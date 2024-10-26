@@ -25,13 +25,12 @@ func init() {
 	plugins.RegisterPlugin(&FGFMSDPlugin{})
 }
 
-// DetectFortinetVersion sends a basic handshake request and checks the response for Fortinet patterns
-func DetectFortinetVersion(conn net.Conn, timeout time.Duration) (*plugins.Service, error) {
-	const expectedPrefix = "\x16\x03\x01"    //  TLS handshake prefix
+func DetectFortinetVersion(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	const expectedPrefix = "\x16\x03\x01"    // TLS handshake prefix
 	const fortinetIdentifier = "fortinet-ca" // Identifier specific to Fortinet
 
 	// Send a basic handshake request
-	request := []byte{0x16, 0x01, 0x00, 0x00, 0x00} // request
+	request := []byte{0x16, 0x01, 0x00, 0x00, 0x00} // Request
 	response, err := utils.SendRecv(conn, request, timeout)
 	if err != nil {
 		return nil, err
@@ -43,7 +42,10 @@ func DetectFortinetVersion(conn net.Conn, timeout time.Duration) (*plugins.Servi
 	// Check if the response contains the expected prefix and Fortinet identifier
 	if bytes.HasPrefix(response, []byte(expectedPrefix)) && bytes.Contains(response, []byte(fortinetIdentifier)) {
 		info := plugins.Service{
+			IP:        target.Address.Addr().String(),
+			Port:      int(target.Address.Port()),
 			Protocol:  "tcp",
+			TLS:       true,
 			Transport: "tcp",
 			Version:   "Fortinet FortiManager FGFMSD",
 		}
