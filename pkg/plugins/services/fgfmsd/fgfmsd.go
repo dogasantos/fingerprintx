@@ -26,11 +26,11 @@ func init() {
 }
 
 func DetectFortinetVersion(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	const expectedPrefix = "\x16\x03\x01"    // TLS handshake prefix
+	const expectedPrefix = "\x16\x03\x01"    // Example TLS handshake prefix
 	const fortinetIdentifier = "fortinet-ca" // Identifier specific to Fortinet
 
 	// Send a basic handshake request
-	request := []byte{0x16, 0x01, 0x00, 0x00, 0x00} // Request
+	request := []byte{0x16, 0x01, 0x00, 0x00, 0x00} // Example request; customize as necessary
 	response, err := utils.SendRecv(conn, request, timeout)
 	if err != nil {
 		return nil, err
@@ -48,6 +48,7 @@ func DetectFortinetVersion(conn net.Conn, timeout time.Duration, target plugins.
 			TLS:       true,
 			Transport: "tcp",
 			Version:   "Fortinet FortiManager FGFMSD",
+			Raw:       nil, // Explicitly set Raw to nil to avoid duplicate metadata
 		}
 		return &info, nil
 	}
