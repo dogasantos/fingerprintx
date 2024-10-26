@@ -43,6 +43,7 @@ const (
 	ProtoModbus     = "modbus"
 	ProtoMQTT       = "mqtt"
 	ProtoMSSQL      = "mssql"
+	ProtoMSRPC      = "msrpc"
 	ProtoMySQL      = "mysql"
 	ProtoNetbios    = "netbios"
 	ProtoNTP        = "ntp"
@@ -130,6 +131,10 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoRPC:
 		var p ServiceRPC
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoMSRPC:
+		var p ServiceMSRPC
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 	case ProtoMSSQL:
@@ -315,6 +320,26 @@ type RPCB struct {
 
 func (e ServiceRPC) Type() string { return ProtoRPC }
 
+// ServiceMSRPC represents a collection of MSRPC service entries.
+type ServiceMSRPC struct {
+	Entries []MSRPCEntry `json:"entries"`
+}
+
+// MSRPCEntry represents an individual MSRPC service entry.
+type MSRPCEntry struct {
+	UUID     string `json:"uuid"`
+	Version  string `json:"version"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Info     string `json:"info"`
+	Owner    string `json:"owner"`
+}
+
+// Type returns the protocol type for ServiceMSRPC.
+func (e ServiceMSRPC) Type() string {
+	return "MSRPC"
+}
+
 type ServiceSMB struct {
 	SigningEnabled      bool   `json:"signingEnabled"`  // e.g. Is SMB Signing Enabled?
 	SigningRequired     bool   `json:"signingRequired"` // e.g. Is SMB Signing Required?
@@ -414,10 +439,10 @@ type ServiceFTP struct {
 
 func (e ServiceFTP) Type() string { return ProtoFTP }
 
-
 type ServiceFGFMSD struct {
 	Banner string `json:"banner"`
 }
+
 func (e ServiceFGFMSD) Type() string { return ProtoFGFMSD }
 
 type ServiceSMTP struct {

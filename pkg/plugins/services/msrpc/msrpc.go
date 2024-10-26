@@ -31,7 +31,6 @@ func (p *MSRPCPlugin) Port() int {
 	return 135
 }
 
-// Detect performs the detection of MSRPC on the specified host
 func (p *MSRPCPlugin) Detect(ctx context.Context, host string, port int, opts *plugins.Options) (*plugins.Result, error) {
 	target := fmt.Sprintf("%s:%d", host, port)
 	result := &plugins.Result{
@@ -39,6 +38,9 @@ func (p *MSRPCPlugin) Detect(ctx context.Context, host string, port int, opts *p
 		Host:     host,
 		Port:     port,
 	}
+
+	// Initialize the ServiceMSRPC struct
+	service := ServiceMSRPC{}
 
 	// Set up context with optional authentication
 	var gssCtx context.Context
@@ -72,33 +74,30 @@ func (p *MSRPCPlugin) Detect(ctx context.Context, host string, port int, opts *p
 		return nil, fmt.Errorf("failed to perform MSRPC lookup: %w", err)
 	}
 
-	// Populate result metadata with MSRPC endpoints
+	// Populate service entries with MSRPC endpoints
 	for _, entry := range resp.Entries {
 		for _, floor := range entry.Tower.Floors() {
 			uuidStr := ""
 			if floor.UUID != nil {
 				uuidStr = floor.UUID.String()
 			}
-			result.Metadata = append(result.Metadata, protocol.Metadata{
-				Key:   "Endpoint",
-				Value: fmt.Sprintf("UUID: %s, Version: v%d.%d", uuidStr, floor.VersionMajor, floor.VersionMinor),
+
+			service.Entries = append(service.Entries, MSRPCEntry{
+				UUID:     uuidStr,
+				Version:  fmt.Sprintf("v%d.%d", floor.VersionMajor, floor.VersionMinor),
+				Protocol: "MSRPC",
+				Address:  target,
+				Info:     entry.Annotation,
+				Owner:    "", // Owner information can be set if available
 			})
 		}
 	}
 
-	// Attempt to retrieve Windows build version
-	buildVersion, err := p.detectWindowsBuild(gssCtx, cli)
-	if err == nil {
-		result.Metadata = append(result.Metadata, protocol.Metadata{
-			Key:   "WindowsBuild",
-			Value: buildVersion,
-		})
-	} else {
-		result.Metadata = append(result.Metadata, protocol.Metadata{
-			Key:   "WindowsBuild",
-			Value: "Unknown",
-		})
-	}
+	// Attach the ServiceMSRPC data to the result
+	result.Metadata = append(result.Metadata, protocol.Metadata{
+		Key:   "ServiceMSRPC",
+		Value: service,
+	})
 
 	return result, nil
 }
