@@ -48,7 +48,7 @@ func DetectFortinetVersion(conn net.Conn, timeout time.Duration, target plugins.
 			TLS:       true,
 			Transport: "tcp",
 			Version:   "Fortinet FortiManager FGFMSD",
-			Raw:       nil, // Explicitly set Raw to nil to avoid duplicate metadata
+			Raw:       nil,
 		}
 		return &info, nil
 	}
