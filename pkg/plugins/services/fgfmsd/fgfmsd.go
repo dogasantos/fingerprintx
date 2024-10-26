@@ -57,7 +57,7 @@ func DetectFortinetVersion(conn net.Conn, timeout time.Duration, target plugins.
 
 // Run is the main execution function of the plugin
 func (p *FGFMSDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	info, err := DetectFortinetVersion(conn, timeout)
+	info, err := DetectFortinetVersion(conn, timeout, target)
 	if err != nil {
 		return nil, err
 	}
