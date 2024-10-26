@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 	"github.com/dogasantos/fingerprintx/plugins"
 	"github.com/dogasantos/fingerprintx/protocol"
 	"github.com/oiweiwei/go-msrpc/dcerpc"
