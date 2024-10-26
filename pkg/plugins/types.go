@@ -320,26 +320,6 @@ type RPCB struct {
 
 func (e ServiceRPC) Type() string { return ProtoRPC }
 
-// ServiceMSRPC represents a collection of MSRPC service entries.
-type ServiceMSRPC struct {
-	Entries []MSRPCEntry `json:"entries"`
-}
-
-// MSRPCEntry represents an individual MSRPC service entry.
-type MSRPCEntry struct {
-	UUID     string `json:"uuid"`
-	Version  string `json:"version"`
-	Protocol string `json:"protocol"`
-	Address  string `json:"address"`
-	Info     string `json:"info"`
-	Owner    string `json:"owner"`
-}
-
-// Type returns the protocol type for ServiceMSRPC.
-func (e ServiceMSRPC) Type() string {
-	return "MSRPC"
-}
-
 type ServiceSMB struct {
 	SigningEnabled      bool   `json:"signingEnabled"`  // e.g. Is SMB Signing Enabled?
 	SigningRequired     bool   `json:"signingRequired"` // e.g. Is SMB Signing Required?
