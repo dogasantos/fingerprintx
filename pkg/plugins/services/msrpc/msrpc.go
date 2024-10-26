@@ -4,14 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dogasantos/fingerprintx/plugins"
+	"github.com/dogasantos/fingerprintx/protocol"
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	"github.com/oiweiwei/go-msrpc/msrpc/well_known"
 	"github.com/oiweiwei/go-msrpc/ssp"
 	"github.com/oiweiwei/go-msrpc/ssp/credential"
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
-	"github.com/yourusername/fingerprintx/plugins"
-	"github.com/yourusername/fingerprintx/protocol"
 )
 
 func init() {
