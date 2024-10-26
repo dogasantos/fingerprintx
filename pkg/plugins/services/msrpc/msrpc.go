@@ -5,8 +5,7 @@ import (
 	"fmt"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	"github.com/dogasantos/fingerprintx/plugins"
-	"github.com/dogasantos/fingerprintx/protocol"
+	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
 	"github.com/oiweiwei/go-msrpc/dcerpc"
 	"github.com/oiweiwei/go-msrpc/msrpc/epm/epm/v3"
 	"github.com/oiweiwei/go-msrpc/msrpc/well_known"
@@ -15,6 +14,7 @@ import (
 	"github.com/oiweiwei/go-msrpc/ssp/gssapi"
 )
 
+// Register the plugin with fingerprintx
 func init() {
 	plugins.Register("msrpc", &MSRPCPlugin{})
 }
@@ -32,6 +32,7 @@ func (p *MSRPCPlugin) Port() int {
 	return 135
 }
 
+// Detect performs the detection of MSRPC on the specified host
 func (p *MSRPCPlugin) Detect(ctx context.Context, host string, port int, opts *plugins.Options) (*plugins.Result, error) {
 	target := fmt.Sprintf("%s:%d", host, port)
 	result := &plugins.Result{
@@ -94,18 +95,8 @@ func (p *MSRPCPlugin) Detect(ctx context.Context, host string, port int, opts *p
 		}
 	}
 
-	// Attach the ServiceMSRPC data to the result
-	result.Metadata = append(result.Metadata, protocol.Metadata{
-		Key:   "ServiceMSRPC",
-		Value: service,
-	})
+	// Attach the ServiceMSRPC data to the result using pluginutils
+	utils.AddServiceMetadata(result, "ServiceMSRPC", service)
 
 	return result, nil
-}
-
-// detectWindowsBuild tries to retrieve the Windows build version, if possible
-func (p *MSRPCPlugin) detectWindowsBuild(ctx context.Context, cli *epm.EpmClient) (string, error) {
-	// Placeholder for actual logic to retrieve build version from endpoint or other sources
-	// Implement specific checks here
-	return "Unknown", nil
 }
