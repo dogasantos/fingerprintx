@@ -35,7 +35,8 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/modbus"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/mqtt/mqtt3"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/mqtt/mqtt5"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/msrpc"
+
+	//_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/msrpc"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/mssql"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/mysql"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/netbios"
