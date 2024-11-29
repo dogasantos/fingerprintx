@@ -1,22 +1,10 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package redis
 
 import (
 	"bytes"
+	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -27,47 +15,72 @@ type REDISPlugin struct{}
 type REDISTLSPlugin struct{}
 
 type Info struct {
-	AuthRequired bool
+	AuthRequired  bool
+	ProtectedMode bool
 }
 
 const REDIS = "redis"
 const REDISTLS = "redis"
 
 // Check if the response is from a Redis server
-// returns an error if it's not validated as a Redis server
-// and a Info struct with AuthRequired if it is
 func checkRedis(data []byte) (Info, error) {
-	// a valid pong response will be the 7 bytes [+PONG(CR)(NL)]
-	pong := [7]byte{0x2b, 0x50, 0x4f, 0x4e, 0x47, 0x0d, 0x0a}
-	// an auth error will start with the 7 bytes: [-NOAUTH]
-	noauth := [7]byte{0x2d, 0x4e, 0x4f, 0x41, 0x55, 0x54, 0x48}
+	pong := []byte("+PONG\r\n")                                           // +PONG response
+	noauth := []byte("-NOAUTH Authentication required")                   // -NOAUTH response
+	protectedMode := []byte("-DENIED Redis is running in protected mode") // Protected mode response
 
-	msgLength := len(data)
-	if msgLength < 7 {
-		return Info{}, &utils.InvalidResponseErrorInfo{
-			Service: REDIS,
-			Info:    "too short of a response",
+	if bytes.HasPrefix(data, pong) {
+		return Info{AuthRequired: false, ProtectedMode: false}, nil
+	}
+	if bytes.HasPrefix(data, noauth) {
+		return Info{AuthRequired: true, ProtectedMode: false}, nil
+	}
+	if bytes.HasPrefix(data, protectedMode) {
+		return Info{AuthRequired: false, ProtectedMode: true}, nil
+	}
+
+	return Info{}, &utils.InvalidResponseErrorInfo{
+		Service: REDIS,
+		Info:    "invalid response",
+	}
+}
+
+// Extract version and OS information from the INFO response
+func extractRedisInfo(infoResponse []byte) (string, string) {
+	lines := strings.Split(string(infoResponse), "\n")
+	var redisVersion, osVersion string
+
+	for _, line := range lines {
+		if strings.HasPrefix(line, "redis_version:") {
+			redisVersion = strings.TrimSpace(strings.Split(line, ":")[1])
+		}
+		if strings.HasPrefix(line, "os:") {
+			osVersion = strings.TrimSpace(strings.Split(line, ":")[1])
 		}
 	}
 
-	if msgLength == 7 {
-		if bytes.Equal(data, pong[:]) {
-			// Valid PONG response means redis server and no auth
-			return Info{AuthRequired: false}, nil
-		}
-		return Info{}, &utils.InvalidResponseErrorInfo{
-			Service: REDIS,
-			Info:    "invalid PONG response",
-		}
-	}
-	if !bytes.Equal(data[:7], noauth[:]) {
-		return Info{}, &utils.InvalidResponseErrorInfo{
-			Service: REDIS,
-			Info:    "invalid Error response",
-		}
+	return redisVersion, osVersion
+}
+
+// Query Redis INFO command
+func getRedisInfo(conn net.Conn, timeout time.Duration) (string, string, error) {
+	infoCmd := []byte{
+		0x2a, 0x31, 0x0d, 0x0a, // *1\r\n
+		0x24, 0x34, 0x0d, 0x0a, // $4\r\n
+		0x49, 0x4e, 0x46, 0x4f, // INFO
+		0x0d, 0x0a, // \r\n
 	}
 
-	return Info{AuthRequired: true}, nil
+	response, err := utils.SendRecv(conn, infoCmd, timeout)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to send INFO command: %w", err)
+	}
+
+	if len(response) == 0 {
+		return "", "", fmt.Errorf("empty response to INFO command")
+	}
+
+	redisVersion, osVersion := extractRedisInfo(response)
+	return redisVersion, osVersion, nil
 }
 
 func init() {
@@ -75,37 +88,13 @@ func init() {
 	plugins.RegisterPlugin(&REDISTLSPlugin{})
 }
 
-func (p *REDISPlugin) PortPriority(port uint16) bool {
-	return port == 6379
-}
-
-func (p *REDISTLSPlugin) PortPriority(port uint16) bool {
-	return port == 6380
-}
-
-func (p *REDISTLSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	return DetectRedis(conn, target, timeout, true)
-}
-
 func DetectRedis(conn net.Conn, target plugins.Target, timeout time.Duration, tls bool) (*plugins.Service, error) {
-	//https://redis.io/commands/ping/
-	// PING is a supported command since 1.0.0
-	// [*1(CR)(NL)$4(CR)(NL)PING(CR)(NL)]
+	// PING command
 	ping := []byte{
-		0x2a,
-		0x31,
-		0x0d,
-		0x0a,
-		0x24,
-		0x34,
-		0x0d,
-		0x0a,
-		0x50,
-		0x49,
-		0x4e,
-		0x47,
-		0x0d,
-		0x0a,
+		0x2a, 0x31, 0x0d, 0x0a, // *1\r\n
+		0x24, 0x34, 0x0d, 0x0a, // $4\r\n
+		0x50, 0x49, 0x4e, 0x47, // PING
+		0x0d, 0x0a, // \r\n
 	}
 
 	response, err := utils.SendRecv(conn, ping, timeout)
@@ -116,21 +105,47 @@ func DetectRedis(conn net.Conn, target plugins.Target, timeout time.Duration, tl
 		return nil, nil
 	}
 
+	// Check for Redis response and handle protected mode
 	result, err := checkRedis(response)
 	if err != nil {
 		return nil, nil
 	}
+
 	payload := plugins.ServiceRedis{
-		AuthRequired: result.AuthRequired,
+		AuthRequired:  result.AuthRequired,
+		ProtectedMode: result.ProtectedMode,
 	}
+
+	// If no auth required and not in protected mode, retrieve Redis and OS versions
+	if !result.AuthRequired && !result.ProtectedMode {
+		redisVersion, osVersion, err := getRedisInfo(conn, timeout)
+		if err == nil {
+			payload.Version = redisVersion
+			payload.OperatingSystem = osVersion
+		}
+	}
+
+	// Return the service object
 	if tls {
-		return plugins.CreateServiceFrom(target, payload, true, "", plugins.TCPTLS), nil
+		return plugins.CreateServiceFrom(target, payload, true, payload.Version, plugins.TCPTLS), nil
 	}
-	return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+	return plugins.CreateServiceFrom(target, payload, false, payload.Version, plugins.TCP), nil
 }
 
 func (p *REDISPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	return DetectRedis(conn, target, timeout, false)
+}
+
+func (p *REDISTLSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	return DetectRedis(conn, target, timeout, true)
+}
+
+func (p *REDISPlugin) PortPriority(port uint16) bool {
+	return port == 6379
+}
+
+func (p *REDISTLSPlugin) PortPriority(port uint16) bool {
+	return port == 6380
 }
 
 func (p *REDISPlugin) Name() string {

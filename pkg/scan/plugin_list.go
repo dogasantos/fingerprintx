@@ -18,9 +18,13 @@ package scan
 // When a new plugin is added, this list should be updated.
 
 import (
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/activemq"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/amqp"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/damewaremr"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/dhcp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/dns"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/echo"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/epmd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ftp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/http"
@@ -46,6 +50,7 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/postgresql"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/rdp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/redis"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/rmi"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/rsync"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/rtsp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/smb"

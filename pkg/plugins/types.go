@@ -24,10 +24,13 @@ const (
 const TypeService string = "service"
 
 const (
+	ProtoRMI        = "rmi"
 	ProtoDNS        = "dns"
 	ProtoDHCP       = "dhcp"
 	ProtoEcho       = "echo"
+	ProtoEPMD       = "epmd"
 	ProtoFGFMSD     = "fgfmsd"
+	ProtoDameware   = "damewaremr"
 	ProtoFTP        = "ftp"
 	ProtoHTTP       = "http"
 	ProtoHTTPS      = "https"
@@ -41,6 +44,8 @@ const (
 	ProtoLDAP       = "ldap"
 	ProtoLDAPS      = "ldaps"
 	ProtoModbus     = "modbus"
+	ProtoMQ         = "activemq" // Generic MQ protocol for ActiveMQ, RabbitMQ, etc.
+	ProtoAMQP       = "amqp"
 	ProtoMQTT       = "mqtt"
 	ProtoMSSQL      = "mssql"
 	ProtoMSRPC      = "msrpc"
@@ -89,6 +94,15 @@ func (e Service) Metadata() Metadata {
 		var p ServiceFGFMSD
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
+	case ProtoDameware:
+		var p ServiceDameware
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoEPMD:
+		var p ServiceEPMD
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+
 	case ProtoFTP:
 		var p ServiceFTP
 		_ = json.Unmarshal(e.Raw, &p)
@@ -196,6 +210,18 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoMQTT:
 		var p ServiceMQTT
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoMQ:
+		var p ServiceMQ
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoAMQP:
+		var p ServiceAMQP
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoRMI:
+		var p ServiceRMI
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 	case ProtoPOP3:
@@ -390,6 +416,36 @@ type ServiceIPSEC struct {
 
 func (e ServiceIPSEC) Type() string { return ProtoIPSEC }
 
+type ServiceMQ struct {
+	Provider string `json:"provider,omitempty"` // Detected MQ provider, e.g., "ActiveMQ", "RabbitMQ", "IBM MQ"
+	Version  string `json:"version,omitempty"`  // Detected protocol or service version
+	Details  string `json:"details,omitempty"`  // Additional human-readable details (e.g., OS, architecture, platform info)
+	Os       string `json:"os,omitempty"`       // Additional human-readable details (e.g., OS, architecture, platform info)
+	Jvm      string `json:"jvm,omitempty"`      // Additional human-readable details (e.g., OS, architecture, platform info)
+}
+
+func (e ServiceMQ) Type() string { return ProtoMQ }
+
+type ServiceAMQP struct {
+	Provider string            `json:"provider,omitempty"` // Detected MQ provider, e.g., "ActiveMQ", "RabbitMQ", "IBM MQ"
+	Version  string            `json:"version,omitempty"`  // Detected protocol or service version
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+func (e ServiceAMQP) Type() string { return ProtoAMQP }
+
+type ServiceEPMD struct {
+	Provider string `json:"provider,omitempty"`
+}
+
+func (e ServiceEPMD) Type() string { return ProtoEPMD }
+
+type ServiceRMI struct {
+	Provider string `json:"provider"`
+}
+
+func (e ServiceRMI) Type() string { return ProtoRMI }
+
 type ServiceMSSQL struct{}
 
 func (e ServiceMSSQL) Type() string { return ProtoMSSQL }
@@ -405,7 +461,10 @@ type ServiceTelnet struct {
 func (e ServiceTelnet) Type() string { return ProtoTelnet }
 
 type ServiceRedis struct {
-	AuthRequired bool `json:"authRequired:"`
+	ProtectedMode   bool   `json:"protectedMode"`
+	AuthRequired    bool   `json:"authRequired"`
+	Version         string `json:"version"`
+	OperatingSystem string `json:"OperatingSystem"`
 }
 
 func (e ServiceRedis) Type() string { return ProtoRedis }
@@ -417,10 +476,16 @@ type ServiceFTP struct {
 func (e ServiceFTP) Type() string { return ProtoFTP }
 
 type ServiceFGFMSD struct {
-	Banner string `json:"banner"`
+	String string `json:"String"`
 }
 
 func (e ServiceFGFMSD) Type() string { return ProtoFGFMSD }
+
+type ServiceDameware struct {
+	Banner string `json:"banner"`
+}
+
+func (e ServiceDameware) Type() string { return ProtoDameware }
 
 type ServiceSMTP struct {
 	Banner      string   `json:"banner"`
