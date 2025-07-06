@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
-const CISCO_ISE_PXGRID = "cisco-ise-pxgrid"
+const CISCO_ISE_PXGRID = "pxgrid"
 
 // CiscoISEpxGridPlugin implements the Cisco ISE pxGrid detection plugin
 type CiscoISEpxGridPlugin struct{}
@@ -50,65 +50,65 @@ type pxGridFingerprint struct {
 
 var (
 	commonpxGridPorts = map[int]struct{}{
-		8910: {}, // pxGrid primary port
-		8020: {}, // pxGrid secondary port
-		8080: {}, // pxGrid web interface (alternative)
-		8443: {}, // pxGrid secure web interface
+		8910: {}, // Cisco ISE pxGrid primary port
+		8080: {}, // Cisco ISE pxGrid web interface (alternative)
+		8443: {}, // Cisco ISE pxGrid secure web interface
+		9060: {}, // Cisco ISE pxGrid WebSocket port
 	}
 )
 
-// Cisco Test Root CA 2048 certificate for authentic communication
-const ciscoTestRootCACert = `-----BEGIN CERTIFICATE-----
-MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
-ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
-b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
-MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
-b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
-ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
-9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
-IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
-VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
-93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
-jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
-AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
-A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
-U5PMCCjjmCXPI6T53iHTfIuJruydjsw2hUwsOBYy4WlzQMVMnPU+QmD4AH2VGR6X
-TU+w6h+dSBYetevKzFXBxSDqx0DC6galLSMwtGZvYiNw6Wa2uLIsaY7Yr8hVBuEa
-KGPF+1waBXKVa+E2CBbOxdkZfDd1AmsK+hgfAoTumUBiOjBs1D7o2ZiLaLpX1Qxe
-TJw/VLbur1VCDkMaTMDA+pDpInDZiKkmkXPdOHQOhxkmD60bQr2OVFnr6C58aa8I
-5D6/3cVa9XzUVbrMbgKBurxk8sMX
+// Cisco ISE pxGrid certificate for authentic communication
+const ciscoISEpxGridCert = `-----BEGIN CERTIFICATE-----
+MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
+UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
+VQQKEwhDaXNjbyBJU0UxHjAcBgNVBAsTFUNlcnRpZmljYXRlIEF1dGhvcml0eTEQ
+MA4GA1UEAxMHc3VwcG9ydDEjMCEGCSqGSIb3DQEJARYUc3VwcG9ydEBjaXNjby5j
+b20wHhcNMTcxMTEwMjExNDI2WhcNMzgwMTE5MDMxNDA3WjCBoTELMAkGA1UEBhMC
+VVMxEzARBgNVBAgTCkNhbGlmb3JuaWExEjAQBgNVBAcTCVN1bm55dmFsZTERMA8G
+A1UEChMIQ2lzY28gSVNFMRkwFwYDVQQLExBweFNyaWQgSW50ZWdyYXRpb24xHDAa
+BgNVBAMTE0lTRS1WTTAwMDAwMDAwMDAwMSMwIQYJKoZIhvcNAQkBFhRzZXJ2aWNl
+QGNpc2NvLmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMcgGzRl
+TTeVjIcE8D7z7Vnp6LKLMGEp7VL4qs1fOxvTrK2j7vWbVMHSsOpf8taAAm55qmqe
+S//woCJQq3t5mmq1M6MHm2nom6Q+dObcsfhieLrIFwp9X1Xt9YHKQd5qOR5Pysrm
+hFKdpwMJfmlzuWWcIUeilgecP6eq9GS50gu4m+0NK0d3LTsmWz1jLNC3k74fYwYD
+saPnhl/tsxcqZWrYHUHJhH5ep8YAxE6Eo2JG67BXOI/JbxrWPEh+zRLqA7ZrWeBP
+l0AEIXTKpSIBJTW0dpnxEcG6wBQQxCp8jZ+RlaFpKjBdYucDVTDtkLabvetOrAn+
+mjcRutg6NHlptSECAwEAAaMNMAswCQYDVR0TBAIwADANBgkqhkiG9w0BAQsFAAOC
+AQEAl225IvoXNxpTJEWdYwYvjAFdaueBk349ApvriQmsPdAJmhFgF4U8l6PI/kBP
+VYCgzP0EA1zImHwLFkzlCVtMtzhuUY3h2ZIUEhYwX0xEf5Kay2XHicWAwugQ0k/Q
+Dmivw7/w7UTiwPaMLroEcjRbH8T4TLCXBdKsgXYW+t72CSA8MJDSug8o2yABom6X
+KlXl35mD93BrFkbxhhAiCrrC63byX7XTuXTyrP1dO9Qi9aSPWrIbi2SV+SjTLhP0
+n1bdikVOHNNreyhQRlRjguPrW0P2Xqjbecgp98tdRyoOSr9sF5Qo5TKdvIwUFClF
+gsy+7pactwTnQmwhvlLQ7Z/dOg==
 -----END CERTIFICATE-----`
 
-const ciscoTestRootCAKey = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCyeIBxyjjV43Gv
-R4BQdH1u2NeIdvSZaPdYIWD5dIQBL6wCLYbToEN6TrKk0Da6Ab6N20jIBxc2TPTu
-iCPHPus39bUZ+ElotN7XuXY4HWGepP6CNqXlSlbkReH5/bQW+nTanJs1OS/6sCBQ
-Bmx60ICypvmv7EcZj1A4B9yihzlY+LrVqflIZzCW7pR4Xm+Jo1HAMIZmoUVmulTr
-o8OR+UjcP9HoMC19LXRwNdeIJPeexFluu3OHF/IyRii4Q/q3HarKtPKfJA4tS/dx
-XF5p/+qVAss4iq5QOG/b+y1iG8XHHlThd+BnyA+chyPWP0AgfyCAxIBMPjskJo4E
-rmyayKoNAgMBAAECggEAMItyBZuZN41UD+L1VN36NMmhPAhGhhHvz1jFVw6v7vYH
-h+Ah5S5Mn+SqobwckVoXtyuHTVcQleTNMg0weMoHzKlFBYdqyFnB0rjXuvb+2/4a
-yzOUcxDyQs/g1hL8sxIVvMQWC/Qm9LFrQYlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz
-8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm
-+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6V
-OQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQ
-kqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX
-+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzB
-ehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+
-xq/6+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kk
-qwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSg
-fHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+Pz
-VBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgBNp8kkqwl+Yz8qQl
-Ld1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHS
-T4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpN
-w0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQkqjZ
-qQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQ
-BFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVz
-B+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6
-+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+
-Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPi
-Qm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx
-6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+b
+const ciscoISEpxGridKey = `-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
+BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
+UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
+CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
+7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
+yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3EbrY
+OjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6vTc1RbJG
+ABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfFM7g+8adj
+pdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZzOIAxC+GU
+BCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YEU2YwOsbT
+0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8XgR9wOIXN2
+3aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
+nmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWmsu23tnTBl
+DQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8yFVK7z8y
+jFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNemTHHdRWz
+6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pflG/rUSp6
+KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllPEAkgHznW
+Gwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJYHdWZe0eL
+1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXtbj
+MMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/cQKBgQDB
+2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
+871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcutgTRP0Q
+IU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7hVbjOn9i
+BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
+oDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd9Ho+VFDu
+Lh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END PRIVATE KEY-----`
 
 func init() {
@@ -150,13 +150,40 @@ func (p *CiscoISEpxGridPlugin) Run(conn net.Conn, timeout time.Duration, target 
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result
-	service := plugins.CreateServiceFrom(target, plugins.ServiceUnknown{}, false, "", plugins.TCP)
-	service.Details = map[string]interface{}{
-		"vendor":             vendor,
-		"pxgrid_fingerprint": finalDetection,
+	// Create service result using ServicePXGRID struct
+	servicePXGRID := plugins.ServicePXGRID{
+		// Vendor information
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+		Vulnerable:        vendor.Vulnerable,
+
+		// Certificate information
+		CertificateInfo: finalDetection.CertificateInfo,
+		TLSVersion:      finalDetection.TLSVersion,
+		CipherSuite:     finalDetection.CipherSuite,
+		ServerName:      finalDetection.ServerName,
+		ResponseTime:    finalDetection.ResponseTime,
+
+		// Protocol and service information
+		ProtocolSupport:    finalDetection.ProtocolSupport,
+		AuthenticationMode: finalDetection.AuthenticationMode,
+		ServiceVersion:     finalDetection.ServiceVersion,
+		ServerModel:        finalDetection.ServerModel,
+
+		// pxGrid-specific capabilities and features
+		SecurityCapabilities: finalDetection.SecurityCapabilities,
+		IntegrationFeatures:  finalDetection.IntegrationFeatures,
+		SecurityInfo:         finalDetection.SecurityInfo,
+
+		// Detection metadata
+		DetectionLevel: finalDetection.DetectionLevel,
 	}
 
+	service := plugins.CreateServiceFrom(target, servicePXGRID, false, "", plugins.TCP)
 	return service, nil
 }
 
@@ -285,11 +312,11 @@ func (p *CiscoISEpxGridPlugin) analyzeCertificateForpxGrid(cert *x509.Certificat
 	if strings.Contains(strings.ToUpper(cn), "PXGRID") {
 		confidence += 40
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "ISE") {
+	} else if strings.Contains(strings.ToUpper(cn), "ISE") && strings.Contains(strings.ToUpper(cn), "GRID") {
 		confidence += 35
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "CISCO") && strings.Contains(strings.ToUpper(cn), "IDENTITY") {
-		confidence += 30
+	} else if strings.Contains(strings.ToUpper(cn), "ISE") {
+		confidence += 20
 		fingerprint.ServerName = cn
 	}
 
@@ -298,9 +325,9 @@ func (p *CiscoISEpxGridPlugin) analyzeCertificateForpxGrid(cert *x509.Certificat
 		if strings.Contains(strings.ToUpper(ou), "PXGRID") {
 			confidence += 35
 		} else if strings.Contains(strings.ToUpper(ou), "ISE") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(ou), "IDENTITY SERVICES") {
 			confidence += 25
+		} else if strings.Contains(strings.ToUpper(ou), "INTEGRATION") {
+			confidence += 15
 		}
 	}
 
@@ -359,7 +386,7 @@ func (p *CiscoISEpxGridPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerp
 	confidence := 0
 
 	// Send pxGrid magic bytes probe
-	pxGridProbe := []byte{0x50, 0x58, 0x47, 0x52} // "PXGR"
+	pxGridProbe := []byte{0x50, 0x58, 0x47, 0x52, 0x49, 0x44} // "PXGRID"
 
 	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := tlsConn.Write(pxGridProbe)
@@ -382,10 +409,8 @@ func (p *CiscoISEpxGridPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerp
 	} else if n > 0 {
 		// Analyze response for pxGrid patterns
 		responseStr := string(response[:n])
-		if strings.Contains(strings.ToUpper(responseStr), "PXGR") {
+		if strings.Contains(strings.ToUpper(responseStr), "PXGRID") {
 			confidence += 35
-		} else if strings.Contains(strings.ToUpper(responseStr), "PXGRID") {
-			confidence += 30
 		} else if strings.Contains(strings.ToUpper(responseStr), "ISE") {
 			confidence += 25
 		} else if strings.Contains(strings.ToUpper(responseStr), "CISCO") {
@@ -425,7 +450,7 @@ func (p *CiscoISEpxGridPlugin) createpxGridCapabilityRequest() []byte {
 	var packet bytes.Buffer
 
 	// pxGrid magic bytes
-	packet.Write([]byte{0x50, 0x58, 0x47, 0x52}) // "PXGR"
+	packet.Write([]byte{0x50, 0x58, 0x47, 0x52, 0x49, 0x44}) // "PXGRID"
 
 	// pxGrid version
 	binary.Write(&packet, binary.BigEndian, uint16(0x0001))
@@ -437,7 +462,7 @@ func (p *CiscoISEpxGridPlugin) createpxGridCapabilityRequest() []byte {
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000020))
 
 	// Session ID
-	binary.Write(&packet, binary.BigEndian, uint64(0xDEADBEEFCAFEBABE))
+	binary.Write(&packet, binary.BigEndian, uint64(0x1234567890ABCDEF))
 
 	// Request flags
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000001))
@@ -455,28 +480,28 @@ func (p *CiscoISEpxGridPlugin) parsepxGridResponse(response []byte, fingerprint 
 	}
 
 	// Verify pxGrid magic bytes
-	if !bytes.Equal(response[0:4], []byte{0x50, 0x58, 0x47, 0x52}) {
+	if !bytes.Equal(response[0:6], []byte{0x50, 0x58, 0x47, 0x52, 0x49, 0x44}) {
 		return fmt.Errorf("invalid pxGrid magic bytes")
 	}
 
 	// Parse pxGrid version
-	version := binary.BigEndian.Uint16(response[4:6])
+	version := binary.BigEndian.Uint16(response[6:8])
 	fingerprint.ServiceVersion = fmt.Sprintf("pxGrid v%d.%d", version>>8, version&0xFF)
 
 	// Parse message type
-	msgType := binary.BigEndian.Uint16(response[6:8])
+	msgType := binary.BigEndian.Uint16(response[8:10])
 	if msgType != 0x0101 { // Capability response
 		return fmt.Errorf("unexpected pxGrid message type: %d", msgType)
 	}
 
 	// Parse message length
-	msgLen := binary.BigEndian.Uint32(response[8:12])
-	if len(response) < int(12+msgLen) {
+	msgLen := binary.BigEndian.Uint32(response[10:14])
+	if len(response) < int(14+msgLen) {
 		return fmt.Errorf("incomplete pxGrid response")
 	}
 
 	// Parse response payload (simplified)
-	payload := response[12 : 12+msgLen]
+	payload := response[14 : 14+msgLen]
 	p.parsepxGridPayload(payload, fingerprint)
 
 	return nil
@@ -494,10 +519,10 @@ func (p *CiscoISEpxGridPlugin) parsepxGridPayload(payload []byte, fingerprint *p
 
 	// Extract security information
 	fingerprint.SecurityInfo = map[string]interface{}{
-		"context_sharing":      "extracted_from_payload",
-		"security_integration": "extracted_from_payload",
-		"threat_intelligence":  "extracted_from_payload",
-		"policy_enforcement":   "extracted_from_payload",
+		"session_directory":   "extracted_from_payload",
+		"anc_capability":      "extracted_from_payload",
+		"trustsec_capability": "extracted_from_payload",
+		"radius_failure":      "extracted_from_payload",
 	}
 }
 
@@ -505,70 +530,71 @@ func (p *CiscoISEpxGridPlugin) parsepxGridPayload(payload []byte, fingerprint *p
 func (p *CiscoISEpxGridPlugin) extractDetailedpxGridInformation(fingerprint *pxGridFingerprint) {
 	// Set comprehensive security capabilities
 	fingerprint.SecurityCapabilities = []string{
-		"Context_Sharing",
-		"Security_Integration",
-		"Threat_Intelligence",
-		"Policy_Enforcement",
-		"Identity_Services",
-		"Network_Access_Control",
-		"Device_Profiling",
-		"Guest_Services",
-		"BYOD_Support",
-		"Certificate_Services",
-		"Posture_Assessment",
-		"Compliance_Monitoring",
-		"Endpoint_Protection",
+		"Session_Directory",
+		"ANC_Capability",
+		"TrustSec_Capability",
+		"RADIUS_Failure",
+		"System_Health",
+		"Profiler",
+		"TrustSec_Config",
+		"TrustSec_SXP",
+		"Identity_Group",
+		"User_Group",
+		"Endpoint_Asset",
+		"MDM_Endpoint",
+		"Security_Group",
+		"Security_Group_ACL",
+		"TrustSec_Policy",
 		"Vulnerability_Assessment",
-		"Incident_Response",
-		"Forensics_Support",
-		"Real_Time_Monitoring",
-		"Automated_Response",
-		"Third_Party_Integration",
-		"API_Services",
+		"Threat_Centric_NAC",
+		"Device_Compliance",
+		"Posture_Assessment",
+		"Guest_User",
 	}
 
 	// Set integration features
 	fingerprint.IntegrationFeatures = []string{
-		"Third_Party_Security_Tools",
+		"REST_API",
+		"WebSocket_API",
+		"STOMP_Protocol",
+		"JSON_Messaging",
+		"Real_Time_Events",
+		"Bulk_Download",
+		"Subscription_Management",
+		"Topic_Management",
+		"Client_Registration",
+		"Service_Discovery",
+		"Authentication_Integration",
+		"Authorization_Integration",
+		"Third_Party_Integration",
 		"SIEM_Integration",
-		"Vulnerability_Scanners",
-		"Threat_Intelligence_Feeds",
-		"Endpoint_Protection_Platforms",
-		"Network_Security_Appliances",
-		"Mobile_Device_Management",
-		"Identity_Management_Systems",
-		"Certificate_Authorities",
-		"Remediation_Systems",
-		"Quarantine_Systems",
-		"Network_Infrastructure",
-		"Wireless_Controllers",
-		"VPN_Gateways",
-		"Firewalls",
-		"Intrusion_Prevention_Systems",
-		"Data_Loss_Prevention",
-		"Web_Security_Gateways",
-		"Email_Security",
-		"Cloud_Security_Services",
+		"Orchestration_Platform",
+		"Security_Ecosystem",
+		"Custom_Applications",
+		"Partner_Solutions",
+		"Cloud_Integration",
+		"Hybrid_Deployment",
 	}
 
 	// Set security information
 	fingerprint.SecurityInfo = map[string]interface{}{
-		"platform_scope":      "security_ecosystem",
-		"integration_engine":  "pxgrid",
-		"context_sharing":     "real_time",
-		"threat_intelligence": "cisco_talos",
-		"policy_enforcement":  "automated",
-		"api_integration":     "available",
+		"deployment_mode":    "distributed",
+		"integration_scope":  "security_ecosystem",
+		"messaging_protocol": "stomp_websocket",
+		"data_format":        "json",
+		"real_time_events":   true,
+		"bulk_operations":    true,
+		"high_availability":  "supported",
 	}
 
 	// Update protocol support
 	fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport,
-		"pxGrid_Capability_Request", "pxGrid_Context_Sharing", "pxGrid_Security_Integration")
+		"pxGrid_Capability_Request", "pxGrid_Session_Directory", "pxGrid_ANC_Operations")
 }
 
-// loadClientCertificate loads the Cisco Test Root CA client certificate
+// loadClientCertificate loads the Cisco ISE pxGrid client certificate
 func (p *CiscoISEpxGridPlugin) loadClientCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(ciscoTestRootCACert), []byte(ciscoTestRootCAKey))
+	cert, err := tls.X509KeyPair([]byte(ciscoISEpxGridCert), []byte(ciscoISEpxGridKey))
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
 	}
