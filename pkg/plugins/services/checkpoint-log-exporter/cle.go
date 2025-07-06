@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
 const CHECKPOINT_LOG_EXPORTER = "checkpoint-log-exporter"
@@ -118,10 +118,14 @@ func (p *Plugin) performBasicLogExporterDetection(conn net.Conn, timeout time.Du
 		return nil, nil // Not confident enough
 	}
 
-	// Create basic Log Exporter fingerprint
-	fingerprint := LogExporterFingerprint{
-		DetectionLevel:     "basic",
+	// Create basic Log Exporter service using ServiceCLE
+	serviceCLE := plugins.ServiceCLE{
+		VendorName:         "CheckPoint",
+		VendorProduct:      "Log Exporter",
+		VendorConfidence:   confidence,
+		VendorMethod:       "Server Certificate and TLS Fingerprinting",
 		Vulnerable:         false,
+		DetectionLevel:     "basic",
 		AuthenticationMode: "certificate_not_required",
 		TLSInfo: map[string]interface{}{
 			"version":     getTLSVersionString(state.Version),
@@ -135,27 +139,15 @@ func (p *Plugin) performBasicLogExporterDetection(conn net.Conn, timeout time.Du
 		},
 	}
 
-	vendorInfo := LogExporterVendorInfo{
-		Name:       "CheckPoint",
-		Product:    "Log Exporter",
-		Confidence: confidence,
-		Method:     "Server Certificate and TLS Fingerprinting",
-		Vulnerable: false,
-	}
-
 	// Create service with fingerprint data
-	service := plugins.CreateServiceFrom(target, plugins.ServiceCheckPointLogExporter{}, false, "", plugins.TCP)
-	service.Fingerprint = map[string]interface{}{
-		"log_exporter_fingerprint": fingerprint,
-		"vendor":                   vendorInfo,
-	}
+	service := plugins.CreateServiceFrom(target, serviceCLE, false, "", plugins.TCP)
 
 	return service, nil
 }
 
 func (p *Plugin) performEnhancedLogExporterDetection(conn net.Conn, timeout time.Duration, target plugins.Target, basicResult *plugins.Service) (*plugins.Service, error) {
 	// Create new connection for enhanced detection
-	enhancedConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.Host, target.Port), timeout)
+	enhancedConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.Host, int(target.Address.Port())), timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -190,10 +182,15 @@ func (p *Plugin) performEnhancedLogExporterDetection(conn net.Conn, timeout time
 		return nil, err
 	}
 
-	// Create enhanced Log Exporter fingerprint
-	fingerprint := LogExporterFingerprint{
-		DetectionLevel:     "enhanced",
+	// Create enhanced Log Exporter service using ServiceCLE
+	serviceCLE := plugins.ServiceCLE{
+		VendorName:         "CheckPoint",
+		VendorProduct:      logExporterInfo.Product,
+		VendorVersion:      logExporterInfo.Version,
+		VendorConfidence:   100,
+		VendorMethod:       "Certificate-based Log Exporter Protocol Communication",
 		Vulnerable:         true,
+		DetectionLevel:     "enhanced",
 		AuthenticationMode: "certificate_accepted",
 		TLSInfo: map[string]interface{}{
 			"version":     getTLSVersionString(tlsConn.ConnectionState().Version),
@@ -205,21 +202,8 @@ func (p *Plugin) performEnhancedLogExporterDetection(conn net.Conn, timeout time
 		SecurityInfo:       logExporterInfo.SecurityInfo,
 	}
 
-	vendorInfo := LogExporterVendorInfo{
-		Name:       "CheckPoint",
-		Product:    logExporterInfo.Product,
-		Version:    logExporterInfo.Version,
-		Confidence: 100,
-		Method:     "Certificate-based Log Exporter Protocol Communication",
-		Vulnerable: true,
-	}
-
 	// Create enhanced service
-	service := plugins.CreateServiceFrom(target, plugins.ServiceCheckPointLogExporter{}, false, "", plugins.TCP)
-	service.Fingerprint = map[string]interface{}{
-		"log_exporter_fingerprint": fingerprint,
-		"vendor":                   vendorInfo,
-	}
+	service := plugins.CreateServiceFrom(target, serviceCLE, false, "", plugins.TCP)
 
 	return service, nil
 }
