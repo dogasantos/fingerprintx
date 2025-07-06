@@ -144,7 +144,7 @@ func (p *Plugin) performBasicSICDetection(conn net.Conn, timeout time.Duration, 
 	}
 
 	// Create service with fingerprint data
-	service := plugins.CreateServiceFrom(target, plugins.ServiceCheckPointSIC{}, false, "", plugins.TCP)
+	service := plugins.CreateServiceFrom(target, plugins.ServiceSIC{}, false, "", plugins.TCP)
 	service.Fingerprint = map[string]interface{}{
 		"sic_fingerprint": fingerprint,
 		"vendor":          vendorInfo,
@@ -215,7 +215,7 @@ func (p *Plugin) performEnhancedSICDetection(conn net.Conn, timeout time.Duratio
 	}
 
 	// Create enhanced service
-	service := plugins.CreateServiceFrom(target, plugins.ServiceCheckPointSIC{}, false, "", plugins.TCP)
+	service := plugins.CreateServiceFrom(target, plugins.ServiceSIC{}, false, "", plugins.TCP)
 	service.Fingerprint = map[string]interface{}{
 		"sic_fingerprint": fingerprint,
 		"vendor":          vendorInfo,
