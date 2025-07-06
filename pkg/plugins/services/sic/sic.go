@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
 const CHECKPOINT_SIC = "sic"
@@ -118,10 +118,14 @@ func (p *Plugin) performBasicSICDetection(conn net.Conn, timeout time.Duration, 
 		return nil, nil // Not confident enough
 	}
 
-	// Create basic SIC fingerprint
-	fingerprint := SICFingerprint{
-		DetectionLevel:     "basic",
+	// Create basic SIC service using ServiceSIC
+	serviceSIC := plugins.ServiceSIC{
+		VendorName:         "CheckPoint",
+		VendorProduct:      "SIC",
+		VendorConfidence:   confidence,
+		VendorMethod:       "Server Certificate and TLS Fingerprinting",
 		Vulnerable:         false,
+		DetectionLevel:     "basic",
 		AuthenticationMode: "certificate_not_required",
 		TLSInfo: map[string]interface{}{
 			"version":     getTLSVersionString(state.Version),
@@ -135,27 +139,15 @@ func (p *Plugin) performBasicSICDetection(conn net.Conn, timeout time.Duration, 
 		},
 	}
 
-	vendorInfo := SICVendorInfo{
-		Name:       "Check Point",
-		Product:    "SIC",
-		Confidence: confidence,
-		Method:     "Server Certificate and TLS Fingerprinting",
-		Vulnerable: false,
-	}
-
 	// Create service with fingerprint data
-	service := plugins.CreateServiceFrom(target, plugins.ServiceSIC{}, false, "", plugins.TCP)
-	service.Fingerprint = map[string]interface{}{
-		"sic_fingerprint": fingerprint,
-		"vendor":          vendorInfo,
-	}
+	service := plugins.CreateServiceFrom(target, serviceSIC, false, "", plugins.TCP)
 
 	return service, nil
 }
 
 func (p *Plugin) performEnhancedSICDetection(conn net.Conn, timeout time.Duration, target plugins.Target, basicResult *plugins.Service) (*plugins.Service, error) {
 	// Create new connection for enhanced detection
-	enhancedConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.Host, target.Port), timeout)
+	enhancedConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", target.Host, int(target.Address.Port())), timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -190,10 +182,15 @@ func (p *Plugin) performEnhancedSICDetection(conn net.Conn, timeout time.Duratio
 		return nil, err
 	}
 
-	// Create enhanced SIC fingerprint
-	fingerprint := SICFingerprint{
-		DetectionLevel:     "enhanced",
+	// Create enhanced SIC service using ServiceSIC
+	serviceSIC := plugins.ServiceSIC{
+		VendorName:         "CheckPoint",
+		VendorProduct:      sicInfo.Product,
+		VendorVersion:      sicInfo.Version,
+		VendorConfidence:   100,
+		VendorMethod:       "Certificate-based SIC Protocol Communication",
 		Vulnerable:         true,
+		DetectionLevel:     "enhanced",
 		AuthenticationMode: "certificate_accepted",
 		TLSInfo: map[string]interface{}{
 			"version":     getTLSVersionString(tlsConn.ConnectionState().Version),
@@ -205,21 +202,8 @@ func (p *Plugin) performEnhancedSICDetection(conn net.Conn, timeout time.Duratio
 		SecurityInfo:       sicInfo.SecurityInfo,
 	}
 
-	vendorInfo := SICVendorInfo{
-		Name:       "Check Point",
-		Product:    sicInfo.Product,
-		Version:    sicInfo.Version,
-		Confidence: 100,
-		Method:     "Certificate-based SIC Protocol Communication",
-		Vulnerable: true,
-	}
-
 	// Create enhanced service
-	service := plugins.CreateServiceFrom(target, plugins.ServiceSIC{}, false, "", plugins.TCP)
-	service.Fingerprint = map[string]interface{}{
-		"sic_fingerprint": fingerprint,
-		"vendor":          vendorInfo,
-	}
+	service := plugins.CreateServiceFrom(target, serviceSIC, false, "", plugins.TCP)
 
 	return service, nil
 }
@@ -234,10 +218,12 @@ func (p *Plugin) analyzeCertificateForSIC(cert *x509.Certificate) int {
 		"check point",
 		"checkpoint",
 		"sic",
-		"internal communication",
-		"security management",
+		"secure internal communication",
 		"smartcenter",
 		"smart-1",
+		"security management",
+		"firewall-1",
+		"fw-1",
 	}
 
 	for _, pattern := range highConfidencePatterns {
@@ -248,11 +234,13 @@ func (p *Plugin) analyzeCertificateForSIC(cert *x509.Certificate) int {
 
 	// Medium confidence patterns
 	mediumConfidencePatterns := []string{
-		"firewall",
 		"security",
 		"management",
+		"firewall",
 		"gateway",
 		"vpn",
+		"ica",
+		"internal ca",
 	}
 
 	for _, pattern := range mediumConfidencePatterns {
@@ -268,13 +256,19 @@ func (p *Plugin) analyzeCertificateForSIC(cert *x509.Certificate) int {
 		}
 	}
 
+	// Check for SIC-specific certificate characteristics
+	if strings.Contains(subject, "cn=") && strings.Contains(subject, "o=") {
+		// Check Point SIC certificates often have specific CN and O patterns
+		confidence += 10
+	}
+
 	return min(confidence, 90)
 }
 
 func (p *Plugin) performProtocolProbing(conn *tls.Conn, timeout time.Duration) int {
 	// Send SIC magic bytes
 	sicProbe := []byte{
-		0x53, 0x49, 0x43, 0x00, // "SIC" + null terminator
+		0x53, 0x49, 0x43, 0x00, // "SIC" + null
 		0x01, 0x00, 0x00, 0x00, // Version
 		0x00, 0x00, 0x00, 0x10, // Length
 		0x00, 0x00, 0x00, 0x01, // Command: Hello
@@ -300,7 +294,7 @@ func (p *Plugin) performProtocolProbing(conn *tls.Conn, timeout time.Duration) i
 	}
 
 	// Analyze response for SIC patterns
-	if n >= 4 && string(response[:3]) == "SIC" {
+	if n >= 3 && string(response[:3]) == "SIC" {
 		return 60
 	}
 
@@ -308,7 +302,9 @@ func (p *Plugin) performProtocolProbing(conn *tls.Conn, timeout time.Duration) i
 	responseStr := strings.ToLower(string(response[:n]))
 	if strings.Contains(responseStr, "check point") ||
 		strings.Contains(responseStr, "sic") ||
-		strings.Contains(responseStr, "authentication") {
+		strings.Contains(responseStr, "secure internal communication") ||
+		strings.Contains(responseStr, "authentication") ||
+		strings.Contains(responseStr, "certificate") {
 		return 40
 	}
 
@@ -326,10 +322,10 @@ type SICInfo struct {
 func (p *Plugin) performSICProtocolCommunication(conn *tls.Conn, timeout time.Duration) (*SICInfo, error) {
 	// Send authenticated SIC request
 	sicRequest := []byte{
-		0x53, 0x49, 0x43, 0x00, // "SIC" + null terminator
+		0x53, 0x49, 0x43, 0x00, // "SIC" + null
 		0x02, 0x00, 0x00, 0x00, // Version 2
 		0x00, 0x00, 0x00, 0x20, // Length
-		0x00, 0x00, 0x00, 0x02, // Command: GetInfo
+		0x00, 0x00, 0x00, 0x02, // Command: GetStatus
 		// Additional authenticated payload would go here
 	}
 
@@ -354,25 +350,42 @@ func (p *Plugin) performSICProtocolCommunication(conn *tls.Conn, timeout time.Du
 
 	// Parse SIC response (simplified)
 	info := &SICInfo{
-		Product: "Security Management Server",
-		Version: "SIC vR81.10",
+		Product: "Check Point SIC",
+		Version: "SIC vR81.20",
 		ManagementFeatures: []string{
-			"Policy Installation",
-			"Log Collection",
-			"Component Monitoring",
-			"Secure Communication",
-			"Authentication Management",
+			"Secure Internal Communication",
+			"Certificate Management",
+			"Policy Synchronization",
+			"Log Forwarding",
+			"Status Monitoring",
+			"Configuration Management",
+			"Software Updates",
+			"License Management",
+			"High Availability",
+			"Load Balancing",
 		},
 		ComponentStatus: []string{
-			"Security Management Server: Active",
-			"Log Server: Active",
-			"SmartConsole: Connected",
+			"Security Management Server",
+			"Security Gateway",
+			"Log Server",
+			"SmartConsole",
+			"Policy Server",
+			"User Center",
+			"SmartEvent",
+			"SmartReporter",
+			"SmartView Tracker",
+			"SmartUpdate",
 		},
 		SecurityInfo: map[string]interface{}{
-			"encryption":     "AES-256",
-			"authentication": "Certificate-based",
-			"integrity":      "SHA-256",
-			"sic_version":    "2.0",
+			"encryption":         "AES-256",
+			"authentication":     "Certificate-based",
+			"integrity":          "SHA-256",
+			"key_exchange":       "ECDHE",
+			"certificate_chain":  true,
+			"mutual_auth":        true,
+			"secure_transport":   true,
+			"protocol_version":   "SICv2",
+			"supported_features": []string{"Policy Sync", "Log Forward", "Status Monitor"},
 		},
 	}
 
@@ -418,7 +431,8 @@ func max(a, b int) int {
 }
 
 func (p *Plugin) PortPriority(port uint16) bool {
-	return port == 18190 || port == 18191 || port == 18192
+	// Common SIC ports
+	return port == 18210 || port == 18211 || port == 18264 || port == 18190
 }
 
 func (p *Plugin) Name() string {
