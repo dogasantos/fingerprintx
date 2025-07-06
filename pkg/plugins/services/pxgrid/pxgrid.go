@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
 const CISCO_ISE_PXGRID = "cisco-ise-pxgrid"

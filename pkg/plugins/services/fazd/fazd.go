@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
-	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
 )
 
 type FAZDPlugin struct{}

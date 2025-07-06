@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
 const SYSLOG = "Syslog"
