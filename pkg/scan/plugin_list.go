@@ -25,7 +25,6 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/dns"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/echo"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/epmd"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ftp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/http"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/imap"
@@ -60,4 +59,19 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/stun"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/telnet"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/vnc"
+
+	//added
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ccl"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/checkpoint-log-exporter"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ems"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/epmd"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fazd"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fghas"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ftd"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ipsec"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/lisp"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pxgrid"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/radius"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sic"
 )
