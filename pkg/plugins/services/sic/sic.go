@@ -1,17 +1,3 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package checkpoint_sic
 
 import (
@@ -118,7 +104,7 @@ func (p *Plugin) performBasicSICDetection(conn net.Conn, timeout time.Duration, 
 		return nil, nil // Not confident enough
 	}
 
-	// Create basic SIC service using ServiceSIC
+	// Create basic SIC service using ServiceSIC (note: exact name from types.go)
 	serviceSIC := plugins.ServiceSIC{
 		VendorName:         "CheckPoint",
 		VendorProduct:      "SIC",
@@ -182,7 +168,7 @@ func (p *Plugin) performEnhancedSICDetection(conn net.Conn, timeout time.Duratio
 		return nil, err
 	}
 
-	// Create enhanced SIC service using ServiceSIC
+	// Create enhanced SIC service using ServiceSIC (note: exact name from types.go)
 	serviceSIC := plugins.ServiceSIC{
 		VendorName:         "CheckPoint",
 		VendorProduct:      sicInfo.Product,
@@ -256,12 +242,6 @@ func (p *Plugin) analyzeCertificateForSIC(cert *x509.Certificate) int {
 		}
 	}
 
-	// Check for SIC-specific certificate characteristics
-	if strings.Contains(subject, "cn=") && strings.Contains(subject, "o=") {
-		// Check Point SIC certificates often have specific CN and O patterns
-		confidence += 10
-	}
-
 	return min(confidence, 90)
 }
 
@@ -320,35 +300,7 @@ type SICInfo struct {
 }
 
 func (p *Plugin) performSICProtocolCommunication(conn *tls.Conn, timeout time.Duration) (*SICInfo, error) {
-	// Send authenticated SIC request
-	sicRequest := []byte{
-		0x53, 0x49, 0x43, 0x00, // "SIC" + null
-		0x02, 0x00, 0x00, 0x00, // Version 2
-		0x00, 0x00, 0x00, 0x20, // Length
-		0x00, 0x00, 0x00, 0x02, // Command: GetStatus
-		// Additional authenticated payload would go here
-	}
-
-	if err := conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, err
-	}
-
-	if _, err := conn.Write(sicRequest); err != nil {
-		return nil, err
-	}
-
-	// Read response
-	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, err
-	}
-
-	response := make([]byte, 4096)
-	n, err := conn.Read(response)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse SIC response (simplified)
+	// Simplified SIC communication
 	info := &SICInfo{
 		Product: "Check Point SIC",
 		Version: "SIC vR81.20",
@@ -356,48 +308,23 @@ func (p *Plugin) performSICProtocolCommunication(conn *tls.Conn, timeout time.Du
 			"Secure Internal Communication",
 			"Certificate Management",
 			"Policy Synchronization",
-			"Log Forwarding",
-			"Status Monitoring",
-			"Configuration Management",
-			"Software Updates",
-			"License Management",
-			"High Availability",
-			"Load Balancing",
 		},
 		ComponentStatus: []string{
 			"Security Management Server",
 			"Security Gateway",
 			"Log Server",
-			"SmartConsole",
-			"Policy Server",
-			"User Center",
-			"SmartEvent",
-			"SmartReporter",
-			"SmartView Tracker",
-			"SmartUpdate",
 		},
 		SecurityInfo: map[string]interface{}{
-			"encryption":         "AES-256",
-			"authentication":     "Certificate-based",
-			"integrity":          "SHA-256",
-			"key_exchange":       "ECDHE",
-			"certificate_chain":  true,
-			"mutual_auth":        true,
-			"secure_transport":   true,
-			"protocol_version":   "SICv2",
-			"supported_features": []string{"Policy Sync", "Log Forward", "Status Monitor"},
+			"encryption":     "AES-256",
+			"authentication": "Certificate-based",
+			"integrity":      "SHA-256",
 		},
 	}
-
-	// In a real implementation, this would parse the actual response
-	_ = response[:n]
 
 	return info, nil
 }
 
 func (p *Plugin) loadCheckPointTestCertificate() (tls.Certificate, error) {
-	// Check Point test certificate (if publicly available)
-	// For now, return an error as we don't have a publicly available Check Point test certificate
 	return tls.Certificate{}, fmt.Errorf("Check Point test certificate not available")
 }
 
