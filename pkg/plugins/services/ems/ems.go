@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
 const FORTICLIENT_EMS = "ems"
@@ -57,7 +57,7 @@ var (
 	}
 )
 
-// FortiClient EMS certificate for authentic communication (from uploaded content)
+// FortiClient EMS certificate for authentic communication
 const fortiClientEMSCert = `-----BEGIN CERTIFICATE-----
 MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
 UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
@@ -150,13 +150,40 @@ func (p *FortiClientEMSPlugin) Run(conn net.Conn, timeout time.Duration, target 
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result
-	service := plugins.CreateServiceFrom(target, plugins.ServiceUnknown{}, false, "", plugins.TCP)
-	service.Details = map[string]interface{}{
-		"vendor":          vendor,
-		"ems_fingerprint": finalDetection,
+	// Create service result using ServiceEMS struct
+	serviceEMS := plugins.ServiceEMS{
+		// Vendor information
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+		Vulnerable:        vendor.Vulnerable,
+
+		// Certificate information
+		CertificateInfo: finalDetection.CertificateInfo,
+		TLSVersion:      finalDetection.TLSVersion,
+		CipherSuite:     finalDetection.CipherSuite,
+		ServerName:      finalDetection.ServerName,
+		ResponseTime:    finalDetection.ResponseTime,
+
+		// Protocol and service information
+		ProtocolSupport:    finalDetection.ProtocolSupport,
+		AuthenticationMode: finalDetection.AuthenticationMode,
+		ServiceVersion:     finalDetection.ServiceVersion,
+		ServerModel:        finalDetection.ServerModel,
+
+		// EMS-specific capabilities and features
+		EndpointCapabilities: finalDetection.EndpointCapabilities,
+		ComplianceFeatures:   finalDetection.ComplianceFeatures,
+		ManagementInfo:       finalDetection.ManagementInfo,
+
+		// Detection metadata
+		DetectionLevel: finalDetection.DetectionLevel,
 	}
 
+	service := plugins.CreateServiceFrom(target, serviceEMS, false, "", plugins.TCP)
 	return service, nil
 }
 
