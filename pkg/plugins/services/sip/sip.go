@@ -1,4 +1,4 @@
-// Strict SIP plugin that only detects actual SIP services - no false positives
+// Balanced SIP plugin - detects real SIP services but avoids false positives
 
 package sip
 
@@ -190,8 +190,8 @@ func createOPTIONSRequest(target string, sourceIP string) string {
 	return request
 }
 
-// parseSIPResponse parses a SIP response message with STRICT validation
-func parseSIPResponse(response string) (*SIPResponse, error) {
+// parseSIPResponse parses a SIP response message with balanced validation
+func parseSIPResponse(response string, port int) (*SIPResponse, error) {
 	if len(response) < 12 { // Minimum SIP response: "SIP/2.0 200"
 		return nil, fmt.Errorf("response too short to be SIP")
 	}
@@ -201,19 +201,19 @@ func parseSIPResponse(response string) (*SIPResponse, error) {
 		return nil, fmt.Errorf("invalid SIP response format")
 	}
 
-	// STRICT: Parse status line - must be exact SIP format
+	// Parse status line - must be SIP format
 	statusLine := lines[0]
 	parts := strings.SplitN(statusLine, " ", 3)
 	if len(parts) < 3 {
 		return nil, fmt.Errorf("invalid SIP status line format")
 	}
 
-	// STRICT: Must start with exactly "SIP/2.0"
+	// Must start with exactly "SIP/2.0"
 	if parts[0] != "SIP/2.0" {
 		return nil, fmt.Errorf("not a SIP response - invalid protocol: %s", parts[0])
 	}
 
-	// STRICT: Status code must be valid 3-digit number
+	// Status code must be valid 3-digit number
 	statusCode, err := strconv.Atoi(parts[1])
 	if err != nil || statusCode < 100 || statusCode > 699 {
 		return nil, fmt.Errorf("invalid SIP status code: %s", parts[1])
@@ -221,16 +221,9 @@ func parseSIPResponse(response string) (*SIPResponse, error) {
 
 	reasonPhrase := parts[2]
 
-	// Parse headers with validation
+	// Parse headers
 	headers := make(map[string]string)
 	bodyStart := -1
-	requiredHeaders := map[string]bool{
-		"via":     false,
-		"from":    false,
-		"to":      false,
-		"call-id": false,
-		"cseq":    false,
-	}
 
 	for i := 1; i < len(lines); i++ {
 		line := lines[i]
@@ -244,26 +237,7 @@ func parseSIPResponse(response string) (*SIPResponse, error) {
 			headerName := strings.ToLower(strings.TrimSpace(line[:colonIndex]))
 			headerValue := strings.TrimSpace(line[colonIndex+1:])
 			headers[headerName] = headerValue
-
-			// Check for required SIP headers
-			if _, exists := requiredHeaders[headerName]; exists {
-				requiredHeaders[headerName] = true
-			}
 		}
-	}
-
-	// STRICT: Require essential SIP headers for valid detection
-	missingHeaders := []string{}
-	for header, found := range requiredHeaders {
-		if !found {
-			missingHeaders = append(missingHeaders, header)
-		}
-	}
-
-	// For non-standard ports, require ALL essential headers
-	// For standard ports, be slightly more lenient
-	if len(missingHeaders) > 2 {
-		return nil, fmt.Errorf("missing essential SIP headers: %v", missingHeaders)
 	}
 
 	// Extract body
@@ -281,86 +255,58 @@ func parseSIPResponse(response string) (*SIPResponse, error) {
 	}, nil
 }
 
-// validateSIPResponse performs additional validation to ensure it's really SIP
+// validateSIPResponse performs balanced validation to ensure it's really SIP
 func validateSIPResponse(response *SIPResponse, port int) bool {
-	// STRICT: Valid SIP status codes only
-	validStatusCodes := map[int]bool{
-		// 1xx Provisional
-		100: true, 180: true, 181: true, 182: true, 183: true,
-		// 2xx Success
-		200: true, 202: true,
-		// 3xx Redirection
-		300: true, 301: true, 302: true, 305: true, 380: true,
-		// 4xx Client Error
-		400: true, 401: true, 402: true, 403: true, 404: true, 405: true,
-		406: true, 407: true, 408: true, 410: true, 413: true, 414: true,
-		415: true, 416: true, 420: true, 421: true, 423: true, 480: true,
-		481: true, 482: true, 483: true, 484: true, 485: true, 486: true,
-		487: true, 488: true, 491: true, 493: true,
-		// 5xx Server Error
-		500: true, 501: true, 502: true, 503: true, 504: true, 505: true,
-		513: true,
-		// 6xx Global Failure
-		600: true, 603: true, 604: true, 606: true,
-	}
+	// Check for obvious non-SIP protocols first
+	responseText := response.RawResponse
 
-	if !validStatusCodes[response.StatusCode] {
+	// Reject VNC responses
+	if strings.Contains(responseText, "RFB ") ||
+		strings.Contains(responseText, "FictusVNC") ||
+		strings.Contains(responseText, "VNC ") {
 		return false
 	}
 
-	// STRICT: Check for SIP-specific header patterns
-	sipHeaderPatterns := []string{
+	// Reject HTTP responses
+	if strings.HasPrefix(responseText, "HTTP/") {
+		return false
+	}
+
+	// Reject SSH responses
+	if strings.HasPrefix(responseText, "SSH-") {
+		return false
+	}
+
+	// Reject FTP responses
+	if strings.Contains(responseText, "220 ") && strings.Contains(responseText, "FTP") {
+		return false
+	}
+
+	// For standard SIP ports (5060, 5061), be more lenient
+	if port == 5060 || port == 5061 {
+		// Just require it to be a valid SIP response format
+		// Status code validation already done in parseSIPResponse
+		return true
+	}
+
+	// For non-standard ports, require more validation
+	// Check for SIP-specific patterns
+	sipPatterns := []string{
 		"sip:", "SIP/2.0", "z9hG4bK", "tag=", "branch=",
 	}
 
 	foundSipPatterns := 0
-	responseText := strings.ToLower(response.RawResponse)
+	responseTextLower := strings.ToLower(responseText)
 
-	for _, pattern := range sipHeaderPatterns {
-		if strings.Contains(responseText, strings.ToLower(pattern)) {
+	for _, pattern := range sipPatterns {
+		if strings.Contains(responseTextLower, strings.ToLower(pattern)) {
 			foundSipPatterns++
 		}
 	}
 
-	// STRICT: Require multiple SIP-specific patterns
-	if foundSipPatterns < 3 {
+	// For non-standard ports, require at least 2 SIP patterns
+	if foundSipPatterns < 2 {
 		return false
-	}
-
-	// STRICT: For non-standard ports, require even more validation
-	if port != 5060 && port != 5061 {
-		// Require CSeq header with valid format
-		if cseq, exists := response.Headers["cseq"]; exists {
-			cseqParts := strings.Fields(cseq)
-			if len(cseqParts) != 2 {
-				return false
-			}
-			// Check if first part is a number
-			if _, err := strconv.Atoi(cseqParts[0]); err != nil {
-				return false
-			}
-			// Check if second part is a valid SIP method
-			validMethods := map[string]bool{
-				"INVITE": true, "ACK": true, "BYE": true, "CANCEL": true,
-				"OPTIONS": true, "REGISTER": true, "PRACK": true, "SUBSCRIBE": true,
-				"NOTIFY": true, "PUBLISH": true, "INFO": true, "REFER": true,
-				"MESSAGE": true, "UPDATE": true,
-			}
-			if !validMethods[strings.ToUpper(cseqParts[1])] {
-				return false
-			}
-		} else {
-			return false // CSeq is mandatory for non-standard ports
-		}
-
-		// Require Via header with SIP/2.0 format
-		if via, exists := response.Headers["via"]; exists {
-			if !strings.Contains(strings.ToUpper(via), "SIP/2.0") {
-				return false
-			}
-		} else {
-			return false // Via is mandatory for non-standard ports
-		}
 	}
 
 	return true
@@ -405,7 +351,7 @@ func analyzeUserAgent(response *SIPResponse) *VendorInfo {
 	return nil
 }
 
-// detectSIPVendor performs comprehensive vendor detection with STRICT validation
+// detectSIPVendor performs comprehensive vendor detection with balanced validation
 func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port int) (*VendorInfo, *SIPResponse, error) {
 	// Get source IP for SIP message construction
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
@@ -414,31 +360,31 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port i
 	var bestVendor *VendorInfo
 	var sipResponse *SIPResponse
 
-	// Method 1: OPTIONS probe (most reliable for capability detection)
+	// Method 1: OPTIONS probe
 	optionsRequest := createOPTIONSRequest(target, sourceIP)
 	response, err := utils.SendRecv(conn, []byte(optionsRequest), timeout)
 
 	if err == nil && len(response) > 0 {
-		// STRICT: Parse and validate SIP response
-		parsedResponse, parseErr := parseSIPResponse(string(response))
+		// Parse and validate SIP response
+		parsedResponse, parseErr := parseSIPResponse(string(response), port)
 		if parseErr != nil {
 			return nil, nil, fmt.Errorf("not a valid SIP response: %v", parseErr)
 		}
 
-		// STRICT: Additional SIP validation
+		// Additional SIP validation
 		if !validateSIPResponse(parsedResponse, port) {
 			return nil, nil, fmt.Errorf("response failed SIP validation")
 		}
 
 		sipResponse = parsedResponse
 
-		// Analyze User-Agent/Server headers (highest confidence)
+		// Analyze User-Agent/Server headers
 		if vendor := analyzeUserAgent(parsedResponse); vendor != nil {
 			bestVendor = vendor
 		}
 	}
 
-	// Only return if we have a valid SIP response
+	// Return if we have a valid SIP response
 	if sipResponse == nil {
 		return nil, nil, fmt.Errorf("no valid SIP response received")
 	}
@@ -540,21 +486,24 @@ func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, resp
 
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	/**
-	 * STRICT SIP Server Detection - No False Positives
+	 * Balanced SIP Server Detection
 	 *
-	 * This plugin performs STRICT SIP detection with multiple validation layers:
-	 * 1. STRICT SIP response format validation
-	 * 2. Required SIP headers validation
-	 * 3. Valid SIP status codes only
-	 * 4. SIP-specific pattern matching
-	 * 5. Enhanced validation for non-standard ports
+	 * This plugin performs balanced SIP detection:
+	 * 1. Validates SIP response format (SIP/2.0 + valid status codes)
+	 * 2. Rejects obvious non-SIP protocols (VNC, HTTP, SSH, FTP)
+	 * 3. More lenient for standard SIP ports (5060, 5061)
+	 * 4. More strict for non-standard ports
+	 * 5. Detects real SIP services like "482 Merged Request"
+	 *
+	 * Will detect:
+	 * - Real SIP services on port 5060/5061 (like 482 responses)
+	 * - SIP services on non-standard ports (with extra validation)
 	 *
 	 * Will NOT detect:
-	 * - VNC services (like FictusVNC on port 8910)
+	 * - VNC services (FictusVNC, RFB protocol)
 	 * - HTTP services
-	 * - Other protocols that don't respond with valid SIP
-	 *
-	 * Will ONLY detect actual SIP services with proper SIP responses
+	 * - SSH services
+	 * - Other non-SIP protocols
 	 */
 
 	// Extract target host for SIP message construction
@@ -564,15 +513,14 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		targetHost = fmt.Sprintf("%s:%d", target.Host, targetPort)
 	}
 
-	// STRICT: Attempt vendor detection with validation
+	// Attempt vendor detection with balanced validation
 	vendor, response, err := detectSIPVendor(conn, timeout, targetHost, targetPort)
 	if err != nil {
-		// STRICT: If detection failed, do NOT fall back to basic detection
-		// This prevents false positives like VNC being detected as SIP
+		// If detection failed, do not fall back to avoid false positives
 		return nil, nil
 	}
 
-	// STRICT: Only return service if we have a validated SIP response
+	// Only return service if we have a validated SIP response
 	if response == nil {
 		return nil, nil
 	}
@@ -582,7 +530,7 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 }
 
 func (p *Plugin) PortPriority(i uint16) bool {
-	// STRICT: Only prioritize standard SIP ports
+	// Prioritize standard SIP ports
 	return i == 5060 || i == 5061
 }
 
