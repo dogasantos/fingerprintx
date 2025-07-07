@@ -19,6 +19,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -34,32 +36,21 @@ func init() {
 }
 
 /*
-Point-to-Point Tunneling Protocol (PPTP) Detection - Conservative Approach
+Point-to-Point Tunneling Protocol (PPTP) Detection with Banner Extraction
 
-This plugin performs unauthenticated PPTP protocol fingerprinting by sending
-a Start-Control-Connection-Request (SCCRQ) and only returns positive detection
-when receiving a definitive PPTP response.
+This plugin performs unauthenticated PPTP protocol fingerprinting and extracts
+device/software information from PPTP responses to create informative banners.
 
-PPTP operates over TCP port 1723 for control messages and uses specific
-message formats with a magic cookie (0x1A2B3C4D) for synchronization.
+PPTP SCCRP (Start-Control-Connection-Reply) messages contain:
+- Host Name (64 bytes): DNS name of the PPTP server
+- Vendor String (64 bytes): Vendor/software identification
+- Firmware Revision: Version information
+- Protocol Version: PPTP protocol version
 
-The plugin only reports PPTP when it receives:
-- SCCRP (Start-Control-Connection-Reply) - server accepts connection
-- Stop-Control-Connection-Request/Reply - server rejects connection
-- Other valid PPTP control messages with proper header structure
-
-This conservative approach ensures 100% accuracy in PPTP detection.
-
-PPTP Control Message Header Format (RFC 2637):
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Length               |      PPTP Message Type        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Magic Cookie                           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Control Message Type      |           Reserved0           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+The plugin extracts this information to identify:
+- Device manufacturers (Cisco, Microsoft, MikroTik, etc.)
+- Software versions (Windows RRAS, RouterOS, etc.)
+- Firmware revisions and build numbers
 */
 
 const (
@@ -176,14 +167,74 @@ func isDefinitivePPTPResponse(response []byte) bool {
 	case ECHO_REP: // Echo-Reply - server responds to keepalive
 		return true
 	default:
-		// Don't accept other message types as they might be ambiguous
-		// SCCRQ would be unexpected as a response
-		// Call management messages require established connection
 		return false
 	}
 }
 
-// parsePPTPInfo extracts PPTP information from validated response
+// extractStringField extracts null-terminated string from byte array
+func extractStringField(data []byte) string {
+	// Find null terminator
+	nullIndex := bytes.IndexByte(data, 0)
+	if nullIndex == -1 {
+		nullIndex = len(data)
+	}
+
+	// Extract string and clean it
+	str := string(data[:nullIndex])
+	str = strings.TrimSpace(str)
+
+	// Remove non-printable characters
+	re := regexp.MustCompile(`[^\x20-\x7E]`)
+	str = re.ReplaceAllString(str, "")
+
+	return str
+}
+
+// identifyVendorFromString attempts to identify vendor/software from strings
+func identifyVendorFromString(hostName, vendorString string) string {
+	combined := strings.ToLower(hostName + " " + vendorString)
+
+	// Common PPTP implementations and their identifiers
+	vendors := map[string]string{
+		"microsoft":  "Microsoft Windows",
+		"windows":    "Microsoft Windows",
+		"rras":       "Microsoft RRAS",
+		"cisco":      "Cisco",
+		"mikrotik":   "MikroTik RouterOS",
+		"routeros":   "MikroTik RouterOS",
+		"poptop":     "PoPToP PPTP Server",
+		"pptpd":      "PPTP Daemon",
+		"linux":      "Linux PPTP",
+		"freebsd":    "FreeBSD PPTP",
+		"openbsd":    "OpenBSD PPTP",
+		"netbsd":     "NetBSD PPTP",
+		"fortinet":   "Fortinet FortiGate",
+		"fortigate":  "Fortinet FortiGate",
+		"sonicwall":  "SonicWall",
+		"watchguard": "WatchGuard",
+		"zyxel":      "ZyXEL",
+		"draytek":    "DrayTek",
+		"tp-link":    "TP-Link",
+		"netgear":    "Netgear",
+		"linksys":    "Linksys",
+		"asus":       "ASUS",
+		"huawei":     "Huawei",
+		"juniper":    "Juniper Networks",
+		"pfsense":    "pfSense",
+		"opnsense":   "OPNsense",
+		"vyos":       "VyOS",
+	}
+
+	for keyword, vendor := range vendors {
+		if strings.Contains(combined, keyword) {
+			return vendor
+		}
+	}
+
+	return "Unknown"
+}
+
+// parsePPTPInfo extracts PPTP information and creates banner from validated response
 func parsePPTPInfo(response []byte) (map[string]any, string) {
 	info := make(map[string]any)
 
@@ -221,21 +272,66 @@ func parsePPTPInfo(response []byte) (map[string]any, string) {
 	}
 	info["Control_Message_Type"] = messageTypeName
 
-	// Parse additional fields for SCCRP
-	if ctrlMsgType == SCCRP && len(response) >= 20 {
+	// Default banner
+	productBanner := "pptp tunneling_protocol 1.0"
+
+	// Parse additional fields for SCCRP (contains vendor information)
+	if ctrlMsgType == SCCRP && len(response) >= 156 {
 		protocolVersion := binary.BigEndian.Uint16(response[12:14])
 		info["Protocol_Version"] = fmt.Sprintf("0x%04X", protocolVersion)
 
-		if len(response) >= 24 {
+		if len(response) >= 28 {
 			framingCaps := binary.BigEndian.Uint32(response[16:20])
 			bearerCaps := binary.BigEndian.Uint32(response[20:24])
+			maxChannels := binary.BigEndian.Uint16(response[24:26])
+			firmwareRev := binary.BigEndian.Uint16(response[26:28])
+
 			info["Framing_Capabilities"] = fmt.Sprintf("0x%08X", framingCaps)
 			info["Bearer_Capabilities"] = fmt.Sprintf("0x%08X", bearerCaps)
+			info["Max_Channels"] = fmt.Sprintf("%d", maxChannels)
+			info["Firmware_Revision"] = fmt.Sprintf("0x%04X", firmwareRev)
+
+			// Extract Host Name (64 bytes starting at offset 28)
+			if len(response) >= 92 {
+				hostNameBytes := response[28:92]
+				hostName := extractStringField(hostNameBytes)
+				if hostName != "" {
+					info["Host_Name"] = hostName
+				}
+
+				// Extract Vendor String (64 bytes starting at offset 92)
+				if len(response) >= 156 {
+					vendorStringBytes := response[92:156]
+					vendorString := extractStringField(vendorStringBytes)
+					if vendorString != "" {
+						info["Vendor_String"] = vendorString
+					}
+
+					// Create enhanced banner with vendor information
+					vendor := identifyVendorFromString(hostName, vendorString)
+					if vendor != "Unknown" {
+						productBanner = fmt.Sprintf("pptp %s", vendor)
+
+						// Add version information if available
+						if firmwareRev != 0 && firmwareRev != 0x0100 {
+							major := (firmwareRev >> 8) & 0xFF
+							minor := firmwareRev & 0xFF
+							if major > 0 || minor > 0 {
+								productBanner = fmt.Sprintf("pptp %s %d.%d", vendor, major, minor)
+							}
+						}
+					} else if hostName != "" || vendorString != "" {
+						// Use raw vendor string if no known vendor identified
+						if vendorString != "" {
+							productBanner = fmt.Sprintf("pptp %s", vendorString)
+						} else if hostName != "" {
+							productBanner = fmt.Sprintf("pptp %s", hostName)
+						}
+					}
+				}
+			}
 		}
 	}
-
-	// Create conservative product banner
-	productBanner := "pptp tunneling_protocol 1.0"
 
 	return info, productBanner
 }
