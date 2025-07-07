@@ -1004,3 +1004,41 @@ type ServiceCCL struct {
 	// Detection metadata
 	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
 }
+
+func (e ServiceFTD) Type() string { return ProtoFTD }
+
+type ServiceFTD struct {
+	// Vendor information
+	VendorName        string `json:"vendorName,omitempty"`
+	VendorProduct     string `json:"vendorProduct,omitempty"`
+	VendorVersion     string `json:"vendorVersion,omitempty"`
+	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
+	VendorMethod      string `json:"vendorMethod,omitempty"`
+	VendorDescription string `json:"vendorDescription,omitempty"`
+
+	// Certificate information
+	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
+	TLSVersion      string                 `json:"tlsVersion,omitempty"`
+	CipherSuite     string                 `json:"cipherSuite,omitempty"`
+	ServerName      string                 `json:"serverName,omitempty"`
+	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
+
+	// Protocol and service information
+	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
+	AuthenticationMode string   `json:"authenticationMode,omitempty"`
+	ServiceVersion     string   `json:"serviceVersion,omitempty"`
+	DeviceModel        string   `json:"deviceModel,omitempty"`
+
+	// FTD-specific management capabilities
+	ManagementCapabilities []string               `json:"managementCapabilities,omitempty"`
+	ThreatDefenseInfo      map[string]interface{} `json:"threatDefenseInfo,omitempty"`
+	PolicyInfo             map[string]interface{} `json:"policyInfo,omitempty"`
+
+	// Security and networking features
+	SecurityFeatures   []string               `json:"securityFeatures,omitempty"`
+	NetworkingFeatures []string               `json:"networkingFeatures,omitempty"`
+	NetworkInfo        map[string]interface{} `json:"networkInfo,omitempty"`
+
+	// Detection metadata
+	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
+}
