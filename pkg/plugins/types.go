@@ -79,6 +79,7 @@ const (
 	ProtoZabbixAgent = "zabbix"
 	ProtoSIP         = "sip"
 	ProtoL2TP        = "l2tp"
+	ProtoPPTP        = "pptp"
 )
 
 // Used as a key for maps to plugins.
@@ -262,6 +263,11 @@ func (e Service) Metadata() Metadata {
 		var p ServiceSIP
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
+	case ProtoPPTP:
+		var p ServicePPTP
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+
 	//default
 	default:
 		var p ServiceUnknown
@@ -828,6 +834,13 @@ type ServiceSIP struct {
 func (e ServiceL2TP) Type() string { return ProtoL2TP }
 
 type ServiceL2TP struct {
+	Info    string `json:"info"`
+	Product string `json:"product"`
+}
+
+func (e ServicePPTP) Type() string { return ProtoPPTP }
+
+type ServicePPTP struct {
 	Info    string `json:"info"`
 	Product string `json:"product"`
 }

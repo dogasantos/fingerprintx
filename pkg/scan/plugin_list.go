@@ -65,6 +65,7 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/l2tp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/openvpn"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/oracledb"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pptp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sip"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
 
