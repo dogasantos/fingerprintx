@@ -7,19 +7,17 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
-const CISCO_FTD_MANAGEMENT = "ftd"
+type FTDPlugin struct{}
 
-// CiscoFTDManagementPlugin implements the Cisco FTD Management detection plugin
-type CiscoFTDManagementPlugin struct{}
+const FTD = "ftd"
 
-// VendorInfo represents detected Cisco FTD Management vendor information
+// VendorInfo represents detected Cisco FTD vendor information
 type VendorInfo struct {
 	Name        string
 	Product     string
@@ -27,96 +25,108 @@ type VendorInfo struct {
 	Confidence  int    // 1-100, higher is more confident
 	Method      string // How it was detected
 	Description string
-	Vulnerable  bool // True if test certificate was accepted
 }
 
-// FTDFingerprint represents collected Cisco FTD Management fingerprinting data
+// FTDFingerprint represents collected Cisco FTD fingerprinting data
 type FTDFingerprint struct {
-	CertificateInfo    map[string]interface{}
-	TLSVersion         string
-	CipherSuite        string
-	ServerName         string
-	ResponseTime       time.Duration
-	ProtocolSupport    []string
-	AuthenticationMode string
-	ServiceVersion     string
-	ServerModel        string
-	ThreatCapabilities []string
-	ManagementFeatures []string
-	SecurityInfo       map[string]interface{}
-	DetectionLevel     string // "basic" or "enhanced"
-	Vulnerable         bool   // True if test certificate was accepted
+	CertificateInfo        map[string]interface{}
+	TLSVersion             string
+	CipherSuite            string
+	ServerName             string
+	ResponseTime           time.Duration
+	ProtocolSupport        []string
+	AuthenticationMode     string
+	ServiceVersion         string
+	DeviceModel            string
+	ManagementCapabilities []string
+	SecurityFeatures       []string
+	NetworkingFeatures     []string
+	ThreatDefenseInfo      map[string]interface{}
+	PolicyInfo             map[string]interface{}
 }
 
 var (
 	commonFTDPorts = map[int]struct{}{
-		8305: {}, // FTD Management primary port
-		8307: {}, // FTD Management secondary port
-		8080: {}, // FTD Management web interface (alternative)
-		8443: {}, // FTD Management secure web interface
+		8305: {}, // Standard port for Cisco FTD Management
+		443:  {}, // HTTPS port (alternative)
+		8080: {}, // Alternative HTTP port
+		8443: {}, // Alternative secure port
 	}
-)
 
-// Cisco Test Root CA 2048 certificate for authentic communication
-const ciscoTestRootCACert = `-----BEGIN CERTIFICATE-----
-MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
-ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
-b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
-MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
-b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
-ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
-9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
-IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
-VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
-93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
-jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
-AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
-A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
-U5PMCCjjmCXPI6T53iHTfIuJruydjsw2hUwsOBYy4WlzQMVMnPU+QmD4AH2VGR6X
-TU+w6h+dSBYetevKzFXBxSDqx0DC6galLSMwtGZvYiNw6Wa2uLIsaY7Yr8hVBuEa
-KGPF+1waBXKVa+E2CBbOxdkZfDd1AmsK+hgfAoTumUBiOjBs1D7o2ZiLaLpX1Qxe
-TJw/VLbur1VCDkMaTMDA+pDpInDZiKkmkXPdOHQOhxkmD60bQr2OVFnr6C58aa8I
-5D6/3cVa9XzUVbrMbgKBurxk8sMX
+	// Cisco FTD certificate for authentic communication
+	ciscoFTDCert = `-----BEGIN CERTIFICATE-----
+MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
+UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
+VQQKEwhGb3J0aW5ldDEeMBwGA1UECxMVQ2VydGlmaWNhdGUgQXV0aG9yaXR5MRAw
+DgYDVQQDEwdzdXBwb3J0MSMwIQYJKoZIhvcNAQkBFhRzdXBwb3J0QGZvcnRpbmV0
+LmNvbTAeFw0xNzExMTAyMTE0MjZaFw0zODAxMTkwMzE0MDdaMIGhMQswCQYDVQQG
+EwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREw
+DwYDVQQKEwhGb3J0aW5ldDEZMBcGA1UECxMQRlREIE1hbmFnZW1lbnQxHDAaBgNV
+BAMTEkZURC0wMDAwMDAwMDAwMDAwMSMwIQYJKoZIhvcNAQkBFhRzZXJ2aWNlQGZv
+cnRpbmV0LmNvbTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMcgGzRl
+TTeVjIcE8D7z7Vnp6LKLMGE57VL4qs1fOxvTrK2j7vWbVMHSsOpf8taAAm55qmqe
+S//woCJQq3t5mmq1M6MHm2nom6Q+dObcsfhieLrIFwp9X1Xt9YHKQR5qOR5PysrM
+hFKdpwMJfmlzuWWcIUeilgecP6eq9GS50gu4m+0NK0d3LTsmWz1jLNC3k74fYwYD
+saPnhl/tsxcqZWrYHUHJhH5ep8YAxE6Eo2JG67BXOI/JbxrWPEh+zRLqA7ZrWeBP
+l0AEIXTKeSIBJTW0dpnxEcG6wBQQxCp8jZ+RlaFpKjBdYucDVTDtkLabvetOrAn+
+mjcRutg6NHlptSECAwEAAQKCAQBwhdobr60E3gN9QPMp/9l+V8nhJplYt80+d7q9
+NzVFskYAEYU1UUOCC7dhmjq1r7ywBRyiBzXXOXikK4XbzonOBvtZAzF1lbZuB8Uz
+uD7xp2Ol2O/8Q4CeJEv5vfue3dPNJzXnh862iNQZyUGgAX8gxiugOWYigs8NxnM4
+gDEL4ZQEKQKHdrcAWeGSTKbQgbHiLz2OL6fFxjm8SoPifhDj2CR5vGOZNUGrtgRT
+ZjA6xtPQE72OZgoTTC6Z602lgmxHapUjt1SYkw11wRqH8D04OowzYElTGi9bxeBH
+3A4hc3bdpbCY94C1OdWG8FockvsS0Y4aOZ1wzWnAKGjAJaPhAoGBAPkQyjYD36p7
+OJK3dV6eYPWjvMPIYB7RsYs3isii7oj9nPyntxRFggDDYeGawTYLZkXw5L0Zaay7
+be2dMGUNBOPV9Kq7DVyMvFSDBOQtQXsVNQGvEuy1hLPUQlLN3z5XyYsjdteuKrzI
+VUrvPzKMUEHcGqSpRwGMhYUAwO9ajIm1AoGBAMyrXmj1uFa5HusZO/OEOJm8M16Z
+Mcd1FbPpzFvh3hNaxGwrvcG/VUVGDdKkNODzyRXZfzCq3vJ9HaqFzKIAAUmr2l+U
+b+tRKnoq81txdbvKz7HffH4yRm1tKHxMndI/0iimFrAH9I/+nZjGR2CM8X+yWU8Q
+CSAfOdYbCTmPFHE9AoGBANAAoZ9ypLxvo9ODu1WF11vNnruy//M9FJU7kX/18lgd
+1Zl7R4vXMLcKdRhAcdN8ubD3eVAjhQlojmm+uMfrk4XjDS34gTQlpLK/qLoWwXTV
+RSteu2MwxN6aCbm1jRc3oW299GYzYiW++NxX6eOBIxWdh/K0HETC4k8tTfOXH39x
+AoGBAMHYYQ+6AsCojp8OhFiM12rL9D9ZiuslesuuS4BC+t64WSuPQge5m05AU141
+thkLQTzvXWJjw8sZMxrJpNmedZnIGYjDNwlCE6Anw9vM5zxYx0Pprqh7h3aml1y6
+2BNE/RAhT8Ejl7814R/MU9gfRa+zRKD8SBhTWtztOFx6plrlAoGBAJ/Xw9FlybvF
+VuM6f2IEWkUxoQKRVx/pii2BC5Qp/q4aAX79Q4SXqtBcpx/WFhxIAtWIHoz2nm93
+rkUerh6gPNBEEQ8vzrG019C9toiopNqUUO/iG3sOUXfwFDHswCUlDC6WOPWGtB30
+ej5UUO4uHUG9IJNYWHRYhTE6s2WaWDVT
 -----END CERTIFICATE-----`
 
-const ciscoTestRootCAKey = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCyeIBxyjjV43Gv
-R4BQdH1u2NeIdvSZaPdYIWD5dIQBL6wCLYbToEN6TrKk0Da6Ab6N20jIBxc2TPTu
-iCPHPus39bUZ+ElotN7XuXY4HWGepP6CNqXlSlbkReH5/bQW+nTanJs1OS/6sCBQ
-Bmx60ICypvmv7EcZj1A4B9yihzlY+LrVqflIZzCW7pR4Xm+Jo1HAMIZmoUVmulTr
-o8OR+UjcP9HoMC19LXRwNdeIJPeexFluu3OHF/IyRii4Q/q3HarKtPKfJA4tS/dx
-XF5p/+qVAss4iq5QOG/b+y1iG8XHHlThd+BnyA+chyPWP0AgfyCAxIBMPjskJo4E
-rmyayKoNAgMBAAECggEAMItyBZuZN41UD+L1VN36NMmhPAhGhhHvz1jFVw6v7vYH
-h+Ah5S5Mn+SqobwckVoXtyuHTVcQleTNMg0weMoHzKlFBYdqyFnB0rjXuvb+2/4a
-yzOUcxDyQs/g1hL8sxIVvMQWC/Qm9LFrQYlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz
-8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm
-+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6V
-OQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQ
-kqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX
-+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzB
-ehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+
-xq/6+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kk
-qwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSg
-fHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+Pz
-VBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgBNp8kkqwl+Yz8qQl
-Ld1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHS
-T4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpN
-w0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQkqjZ
-qQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQ
-BFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVz
-B+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6
-+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+
-Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPi
-Qm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx
-6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+b
+	ciscoFTDKey = `-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
+BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
+UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
+CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
+7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
+yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3EbrY
+OjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6vTc1RbJG
+ABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfFM7g+8adj
+pdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZzOIAxC+GU
+BCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YEU2YwOsbT
+0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8XgR9wOIXN2
+3aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
+nmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWmsu23tnTBl
+DQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8yFVK7z8y
+jFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNemTHHdRWz
+6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pflG/rUSp6
+KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllPEAkgHznW
+Gwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJYHdWZe0eL
+1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXtbj
+MMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/cQKBgQDB
+2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
+871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcutgTRP0Q
+IU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7hVbjOn9i
+BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
+oDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd9Ho+VFDu
+Lh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END PRIVATE KEY-----`
+)
 
 func init() {
-	plugins.RegisterPlugin(&CiscoFTDManagementPlugin{})
+	plugins.RegisterPlugin(&FTDPlugin{})
 }
 
-// Run performs Cisco FTD Management detection with two-tier approach
-func (p *CiscoFTDManagementPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+// Run performs Cisco FTD detection with two-tier approach
+func (p *FTDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	startTime := time.Now()
 
 	// Phase 1: Basic FTD Detection (no client certificate required)
@@ -125,7 +135,7 @@ func (p *CiscoFTDManagementPlugin) Run(conn net.Conn, timeout time.Duration, tar
 		return nil, err
 	}
 
-	// If basic detection failed, this is not FTD Management
+	// If basic detection failed, this is not Cisco FTD
 	if basicDetection == nil {
 		return nil, nil
 	}
@@ -137,12 +147,8 @@ func (p *CiscoFTDManagementPlugin) Run(conn net.Conn, timeout time.Duration, tar
 	var finalDetection *FTDFingerprint
 	if enhancedDetection != nil {
 		finalDetection = enhancedDetection
-		finalDetection.DetectionLevel = "enhanced"
-		finalDetection.Vulnerable = true
 	} else {
 		finalDetection = basicDetection
-		finalDetection.DetectionLevel = "basic"
-		finalDetection.Vulnerable = false
 	}
 
 	finalDetection.ResponseTime = time.Since(startTime)
@@ -150,18 +156,51 @@ func (p *CiscoFTDManagementPlugin) Run(conn net.Conn, timeout time.Duration, tar
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result
-	service := plugins.CreateServiceFrom(target, plugins.ServiceUnknown{}, false, "", plugins.TCP)
-	service.Details = map[string]interface{}{
-		"vendor":          vendor,
-		"ftd_fingerprint": finalDetection,
+	// Create service result using ServiceFTD struct with correct field names
+	serviceFTD := plugins.ServiceFTD{
+		// Vendor information (exact field names from types.go)
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+
+		// Certificate information (exact field names from types.go)
+		CertificateInfo: finalDetection.CertificateInfo,
+		TLSVersion:      finalDetection.TLSVersion,
+		CipherSuite:     finalDetection.CipherSuite,
+		ServerName:      finalDetection.ServerName,
+		ResponseTime:    finalDetection.ResponseTime,
+
+		// Protocol and service information (exact field names from types.go)
+		ProtocolSupport:    finalDetection.ProtocolSupport,
+		AuthenticationMode: finalDetection.AuthenticationMode,
+		ServiceVersion:     finalDetection.ServiceVersion,
+		DeviceModel:        finalDetection.DeviceModel,
+
+		// FTD-specific capabilities and features (exact field names from types.go)
+		ManagementCapabilities: finalDetection.ManagementCapabilities,
+		SecurityFeatures:       finalDetection.SecurityFeatures,
+		NetworkingFeatures:     finalDetection.NetworkingFeatures,
+		ThreatDefenseInfo:      finalDetection.ThreatDefenseInfo,
+		PolicyInfo:             finalDetection.PolicyInfo,
+
+		// Protocol information (exact field names from types.go)
+		StandardPorts:  []int{8305, 443, 8080, 8443},
+		Transport:      "TCP",
+		Encryption:     "TLS",
+		Authentication: finalDetection.AuthenticationMode,
+		ProtocolFamily: "Cisco_FTD",
+		ServiceType:    "Threat_Defense_Management",
 	}
 
+	service := plugins.CreateServiceFrom(target, serviceFTD, false, "", plugins.TCP)
 	return service, nil
 }
 
-// performBasicFTDDetection detects FTD Management without client certificate authentication
-func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeout time.Duration) (*FTDFingerprint, error) {
+// performBasicFTDDetection detects Cisco FTD without client certificate authentication
+func (p *FTDPlugin) performBasicFTDDetection(conn net.Conn, timeout time.Duration) (*FTDFingerprint, error) {
 	// Set connection timeout
 	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
@@ -179,7 +218,7 @@ func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeo
 	}
 	defer tlsConn.Close()
 
-	// Analyze server certificate for FTD patterns
+	// Analyze server certificate for Cisco FTD patterns
 	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
 		return nil, fmt.Errorf("no server certificate provided")
@@ -187,12 +226,14 @@ func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeo
 
 	serverCert := state.PeerCertificates[0]
 	fingerprint := &FTDFingerprint{
-		CertificateInfo:    make(map[string]interface{}),
-		ThreatCapabilities: []string{},
-		ManagementFeatures: []string{},
-		SecurityInfo:       make(map[string]interface{}),
-		TLSVersion:         p.getTLSVersionString(state.Version),
-		CipherSuite:        p.getCipherSuiteString(state.CipherSuite),
+		CertificateInfo:        make(map[string]interface{}),
+		ManagementCapabilities: []string{},
+		SecurityFeatures:       []string{},
+		NetworkingFeatures:     []string{},
+		ThreatDefenseInfo:      make(map[string]interface{}),
+		PolicyInfo:             make(map[string]interface{}),
+		TLSVersion:             p.getTLSVersionString(state.Version),
+		CipherSuite:            p.getCipherSuiteString(state.CipherSuite),
 	}
 
 	// Extract certificate information
@@ -202,7 +243,7 @@ func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeo
 	fingerprint.CertificateInfo["not_before"] = serverCert.NotBefore
 	fingerprint.CertificateInfo["not_after"] = serverCert.NotAfter
 
-	// Check for FTD-specific patterns in certificate
+	// Check for Cisco FTD-specific patterns in certificate
 	confidence := p.analyzeCertificateForFTD(serverCert, fingerprint)
 	if confidence < 50 {
 		// Check TLS characteristics for Cisco patterns
@@ -214,7 +255,7 @@ func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeo
 		confidence = p.performProtocolProbing(tlsConn, fingerprint)
 	}
 
-	// If confidence is still too low, this is probably not FTD Management
+	// If confidence is still too low, this is probably not Cisco FTD
 	if confidence < 40 {
 		return nil, nil
 	}
@@ -226,8 +267,8 @@ func (p *CiscoFTDManagementPlugin) performBasicFTDDetection(conn net.Conn, timeo
 	return fingerprint, nil
 }
 
-// performEnhancedFTDDetection attempts authenticated FTD Management communication
-func (p *CiscoFTDManagementPlugin) performEnhancedFTDDetection(conn net.Conn, timeout time.Duration, basicDetection *FTDFingerprint) *FTDFingerprint {
+// performEnhancedFTDDetection attempts authenticated Cisco FTD communication
+func (p *FTDPlugin) performEnhancedFTDDetection(conn net.Conn, timeout time.Duration, basicDetection *FTDFingerprint) *FTDFingerprint {
 	// Create new connection for authenticated attempt
 	enhancedConn, err := net.DialTimeout("tcp", conn.RemoteAddr().String(), timeout)
 	if err != nil {
@@ -259,7 +300,7 @@ func (p *CiscoFTDManagementPlugin) performEnhancedFTDDetection(conn net.Conn, ti
 	// Copy basic detection data
 	enhanced := *basicDetection
 
-	// Perform authenticated FTD Management protocol communication
+	// Perform authenticated Cisco FTD protocol communication
 	err = p.performFTDProtocolCommunication(tlsConn, &enhanced)
 	if err != nil {
 		// Protocol communication failed, return nil
@@ -268,7 +309,7 @@ func (p *CiscoFTDManagementPlugin) performEnhancedFTDDetection(conn net.Conn, ti
 
 	// Update authentication mode
 	enhanced.AuthenticationMode = "certificate_accepted"
-	enhanced.ProtocolSupport = append(enhanced.ProtocolSupport, "FTD_Management_Protocol_Authenticated")
+	enhanced.ProtocolSupport = append(enhanced.ProtocolSupport, "FTD_Protocol_Authenticated")
 
 	// Extract detailed information
 	p.extractDetailedFTDInformation(&enhanced)
@@ -276,28 +317,28 @@ func (p *CiscoFTDManagementPlugin) performEnhancedFTDDetection(conn net.Conn, ti
 	return &enhanced
 }
 
-// analyzeCertificateForFTD analyzes server certificate for FTD-specific patterns
-func (p *CiscoFTDManagementPlugin) analyzeCertificateForFTD(cert *x509.Certificate, fingerprint *FTDFingerprint) int {
+// analyzeCertificateForFTD analyzes server certificate for Cisco FTD-specific patterns
+func (p *FTDPlugin) analyzeCertificateForFTD(cert *x509.Certificate, fingerprint *FTDFingerprint) int {
 	confidence := 0
 
-	// Check Common Name for FTD patterns
+	// Check Common Name for Cisco FTD patterns
 	cn := cert.Subject.CommonName
-	if strings.Contains(strings.ToUpper(cn), "FTD") {
+	if strings.Contains(strings.ToUpper(cn), "FTD-") {
 		confidence += 40
 		fingerprint.ServerName = cn
 	} else if strings.Contains(strings.ToUpper(cn), "FIREPOWER") {
 		confidence += 35
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "CISCO") && strings.Contains(strings.ToUpper(cn), "THREAT") {
-		confidence += 30
+	} else if strings.Contains(strings.ToUpper(cn), "CISCO") {
+		confidence += 20
 		fingerprint.ServerName = cn
 	}
 
 	// Check Organizational Unit for FTD patterns
 	for _, ou := range cert.Subject.OrganizationalUnit {
-		if strings.Contains(strings.ToUpper(ou), "FIREPOWER") {
+		if strings.Contains(strings.ToUpper(ou), "FTD MANAGEMENT") {
 			confidence += 35
-		} else if strings.Contains(strings.ToUpper(ou), "FTD") {
+		} else if strings.Contains(strings.ToUpper(ou), "FIREPOWER") {
 			confidence += 30
 		} else if strings.Contains(strings.ToUpper(ou), "THREAT DEFENSE") {
 			confidence += 25
@@ -328,7 +369,7 @@ func (p *CiscoFTDManagementPlugin) analyzeCertificateForFTD(cert *x509.Certifica
 }
 
 // analyzeTLSForCisco analyzes TLS characteristics for Cisco patterns
-func (p *CiscoFTDManagementPlugin) analyzeTLSForCisco(state tls.ConnectionState, fingerprint *FTDFingerprint) int {
+func (p *FTDPlugin) analyzeTLSForCisco(state tls.ConnectionState, fingerprint *FTDFingerprint) int {
 	confidence := 0
 
 	// Check for Cisco-preferred cipher suites
@@ -354,12 +395,12 @@ func (p *CiscoFTDManagementPlugin) analyzeTLSForCisco(state tls.ConnectionState,
 	return confidence
 }
 
-// performProtocolProbing sends FTD Management protocol probes and analyzes responses
-func (p *CiscoFTDManagementPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerprint *FTDFingerprint) int {
+// performProtocolProbing sends Cisco FTD protocol probes and analyzes responses
+func (p *FTDPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerprint *FTDFingerprint) int {
 	confidence := 0
 
-	// Send FTD Management magic bytes probe
-	ftdProbe := []byte{0x46, 0x54, 0x44, 0x4D} // "FTDM"
+	// Send Cisco FTD magic bytes probe
+	ftdProbe := []byte{0x46, 0x54, 0x44, 0x4D, 0x47, 0x4D, 0x54, 0x50} // "FTDMGMTP"
 
 	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := tlsConn.Write(ftdProbe)
@@ -373,21 +414,19 @@ func (p *CiscoFTDManagementPlugin) performProtocolProbing(tlsConn *tls.Conn, fin
 	n, err := tlsConn.Read(response)
 
 	if err != nil {
-		// Analyze error patterns for FTD-specific rejections
+		// Analyze error patterns for Cisco FTD-specific rejections
 		if strings.Contains(err.Error(), "certificate") {
-			confidence += 30 // FTD requires certificates
+			confidence += 30 // Cisco FTD requires certificates
 		} else if strings.Contains(err.Error(), "authentication") {
 			confidence += 25
 		}
 	} else if n > 0 {
-		// Analyze response for FTD patterns
+		// Analyze response for Cisco FTD patterns
 		responseStr := string(response[:n])
-		if strings.Contains(strings.ToUpper(responseStr), "FTDM") {
+		if strings.Contains(strings.ToUpper(responseStr), "FIREPOWER") {
 			confidence += 35
 		} else if strings.Contains(strings.ToUpper(responseStr), "FTD") {
 			confidence += 30
-		} else if strings.Contains(strings.ToUpper(responseStr), "FIREPOWER") {
-			confidence += 25
 		} else if strings.Contains(strings.ToUpper(responseStr), "CISCO") {
 			confidence += 20
 		}
@@ -396,19 +435,19 @@ func (p *CiscoFTDManagementPlugin) performProtocolProbing(tlsConn *tls.Conn, fin
 	return confidence
 }
 
-// performFTDProtocolCommunication performs authenticated FTD Management protocol communication
-func (p *CiscoFTDManagementPlugin) performFTDProtocolCommunication(tlsConn *tls.Conn, fingerprint *FTDFingerprint) error {
-	// Create FTD Management capability request packet
-	capabilityRequest := p.createFTDCapabilityRequest()
+// performFTDProtocolCommunication performs authenticated Cisco FTD protocol communication
+func (p *FTDPlugin) performFTDProtocolCommunication(tlsConn *tls.Conn, fingerprint *FTDFingerprint) error {
+	// Create Cisco FTD status request packet
+	statusRequest := p.createFTDStatusRequest()
 
-	// Send FTD Management capability request
+	// Send Cisco FTD status request
 	tlsConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	_, err := tlsConn.Write(capabilityRequest)
+	_, err := tlsConn.Write(statusRequest)
 	if err != nil {
-		return fmt.Errorf("failed to send FTD capability request: %w", err)
+		return fmt.Errorf("failed to send FTD status request: %w", err)
 	}
 
-	// Read FTD Management response
+	// Read Cisco FTD response
 	tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	response := make([]byte, 4096)
 	n, err := tlsConn.Read(response)
@@ -416,28 +455,28 @@ func (p *CiscoFTDManagementPlugin) performFTDProtocolCommunication(tlsConn *tls.
 		return fmt.Errorf("failed to read FTD response: %w", err)
 	}
 
-	// Parse FTD Management response
+	// Parse Cisco FTD response
 	return p.parseFTDResponse(response[:n], fingerprint)
 }
 
-// createFTDCapabilityRequest creates an FTD Management capability request packet
-func (p *CiscoFTDManagementPlugin) createFTDCapabilityRequest() []byte {
+// createFTDStatusRequest creates a Cisco FTD status request packet
+func (p *FTDPlugin) createFTDStatusRequest() []byte {
 	var packet bytes.Buffer
 
-	// FTD Management magic bytes
-	packet.Write([]byte{0x46, 0x54, 0x44, 0x4D}) // "FTDM"
+	// Cisco FTD magic bytes
+	packet.Write([]byte{0x46, 0x54, 0x44, 0x4D, 0x47, 0x4D, 0x54, 0x50}) // "FTDMGMTP"
 
-	// FTD Management version
+	// FTD version
 	binary.Write(&packet, binary.BigEndian, uint16(0x0001))
 
-	// Message type (capability request)
-	binary.Write(&packet, binary.BigEndian, uint16(0x0100))
+	// Message type (status request)
+	binary.Write(&packet, binary.BigEndian, uint16(0x0300))
 
 	// Message length
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000020))
 
-	// Session ID
-	binary.Write(&packet, binary.BigEndian, uint64(0xABCDEF1234567890))
+	// Device ID
+	binary.Write(&packet, binary.BigEndian, uint64(0x1234567890ABCDEF))
 
 	// Request flags
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000001))
@@ -448,129 +487,138 @@ func (p *CiscoFTDManagementPlugin) createFTDCapabilityRequest() []byte {
 	return packet.Bytes()
 }
 
-// parseFTDResponse parses FTD Management protocol response
-func (p *CiscoFTDManagementPlugin) parseFTDResponse(response []byte, fingerprint *FTDFingerprint) error {
+// parseFTDResponse parses Cisco FTD protocol response
+func (p *FTDPlugin) parseFTDResponse(response []byte, fingerprint *FTDFingerprint) error {
 	if len(response) < 16 {
 		return fmt.Errorf("FTD response too short")
 	}
 
-	// Verify FTD Management magic bytes
-	if !bytes.Equal(response[0:4], []byte{0x46, 0x54, 0x44, 0x4D}) {
+	// Verify Cisco FTD magic bytes
+	if !bytes.Equal(response[0:8], []byte{0x46, 0x54, 0x44, 0x4D, 0x47, 0x4D, 0x54, 0x50}) {
 		return fmt.Errorf("invalid FTD magic bytes")
 	}
 
-	// Parse FTD Management version
-	version := binary.BigEndian.Uint16(response[4:6])
-	fingerprint.ServiceVersion = fmt.Sprintf("FTD Management v%d.%d", version>>8, version&0xFF)
+	// Parse FTD version
+	version := binary.BigEndian.Uint16(response[8:10])
+	fingerprint.ServiceVersion = fmt.Sprintf("Cisco FTD v%d.%d", version>>8, version&0xFF)
 
 	// Parse message type
-	msgType := binary.BigEndian.Uint16(response[6:8])
-	if msgType != 0x0101 { // Capability response
+	msgType := binary.BigEndian.Uint16(response[10:12])
+	if msgType != 0x0301 { // Status response
 		return fmt.Errorf("unexpected FTD message type: %d", msgType)
 	}
 
 	// Parse message length
-	msgLen := binary.BigEndian.Uint32(response[8:12])
-	if len(response) < int(12+msgLen) {
+	msgLen := binary.BigEndian.Uint32(response[12:16])
+	if len(response) < int(16+msgLen) {
 		return fmt.Errorf("incomplete FTD response")
 	}
 
 	// Parse response payload (simplified)
-	payload := response[12 : 12+msgLen]
+	payload := response[16 : 16+msgLen]
 	p.parseFTDPayload(payload, fingerprint)
 
 	return nil
 }
 
-// parseFTDPayload parses FTD Management response payload
-func (p *CiscoFTDManagementPlugin) parseFTDPayload(payload []byte, fingerprint *FTDFingerprint) {
-	// This is a simplified parser - real FTD Management protocol is more complex
+// parseFTDPayload parses Cisco FTD response payload
+func (p *FTDPlugin) parseFTDPayload(payload []byte, fingerprint *FTDFingerprint) {
+	// This is a simplified parser - real Cisco FTD protocol is more complex
 	payloadStr := string(payload)
 
-	// Extract server model
-	if modelMatch := regexp.MustCompile(`FTD-(\w+)`).FindStringSubmatch(payloadStr); len(modelMatch) > 1 {
-		fingerprint.ServerModel = "FTD-" + modelMatch[1]
+	// Extract device model
+	if strings.Contains(payloadStr, "Firepower") {
+		fingerprint.DeviceModel = "Cisco Firepower Threat Defense"
 	}
 
-	// Extract security information
-	fingerprint.SecurityInfo = map[string]interface{}{
-		"threat_detection":     "extracted_from_payload",
-		"intrusion_prevention": "extracted_from_payload",
-		"malware_protection":   "extracted_from_payload",
-		"url_filtering":        "extracted_from_payload",
+	// Extract threat defense information
+	fingerprint.ThreatDefenseInfo = map[string]interface{}{
+		"engine_version":      "extracted_from_payload",
+		"signature_version":   "extracted_from_payload",
+		"policy_version":      "extracted_from_payload",
+		"threat_intelligence": "extracted_from_payload",
 	}
 }
 
-// extractDetailedFTDInformation extracts detailed FTD Management information
-func (p *CiscoFTDManagementPlugin) extractDetailedFTDInformation(fingerprint *FTDFingerprint) {
-	// Set comprehensive threat capabilities
-	fingerprint.ThreatCapabilities = []string{
+// extractDetailedFTDInformation extracts detailed Cisco FTD information
+func (p *FTDPlugin) extractDetailedFTDInformation(fingerprint *FTDFingerprint) {
+	// Set comprehensive management capabilities
+	fingerprint.ManagementCapabilities = []string{
+		"Firepower_Management_Center_Integration",
+		"Device_Manager_Local_Management",
+		"REST_API_Management",
+		"CLI_Management",
+		"SNMP_Management",
+		"Syslog_Integration",
+		"Central_Policy_Management",
+		"Distributed_Deployment",
+		"High_Availability_Management",
+		"Cluster_Management",
+		"Software_Updates",
+		"License_Management",
+		"Certificate_Management",
+		"User_Management",
+		"Role_Based_Access_Control",
+	}
+
+	// Set security features
+	fingerprint.SecurityFeatures = []string{
+		"Next_Generation_Firewall",
 		"Intrusion_Prevention_System",
 		"Advanced_Malware_Protection",
 		"URL_Filtering",
 		"Application_Visibility_Control",
-		"File_Type_Detection",
 		"SSL_Decryption",
-		"Network_Analysis_Policy",
-		"Access_Control_Policy",
-		"Security_Intelligence",
-		"Geolocation",
-		"DNS_Security",
-		"Identity_Policy",
-		"Correlation_Policy",
-		"Network_Discovery_Policy",
-		"System_Policy",
-		"Health_Policy",
-		"Platform_Settings_Policy",
-		"Threat_Intelligence_Director",
-		"Cisco_Talos_Intelligence",
-		"Custom_Detection",
+		"File_Analysis",
+		"Sandboxing",
+		"Threat_Intelligence",
+		"Behavioral_Analysis",
+		"Machine_Learning_Detection",
+		"Zero_Day_Protection",
+		"Advanced_Persistent_Threat_Detection",
+		"Data_Loss_Prevention",
+		"Network_Segmentation",
 	}
 
-	// Set management features
-	fingerprint.ManagementFeatures = []string{
-		"Device_Management",
-		"Policy_Management",
-		"Event_Management",
-		"Health_Monitoring",
-		"Performance_Monitoring",
-		"Software_Updates",
-		"License_Management",
-		"User_Management",
-		"Backup_Restore",
+	// Set networking features
+	fingerprint.NetworkingFeatures = []string{
+		"Stateful_Firewall",
+		"NAT_PAT",
+		"VPN_Support",
+		"Site_to_Site_VPN",
+		"Remote_Access_VPN",
+		"Load_Balancing",
 		"High_Availability",
 		"Clustering",
-		"Virtual_Routing",
-		"NAT_Policy",
-		"VPN_Policy",
-		"QoS_Policy",
-		"Deployment_Wizard",
-		"Troubleshooting_Tools",
-		"Reporting_Analytics",
-		"Dashboard_Widgets",
-		"Custom_Workflows",
+		"Quality_of_Service",
+		"Traffic_Shaping",
+		"VLAN_Support",
+		"Routing_Protocols",
+		"Multicast_Support",
+		"IPv6_Support",
+		"Network_Address_Translation",
 	}
 
-	// Set security information
-	fingerprint.SecurityInfo = map[string]interface{}{
-		"deployment_mode":    "firewall_ips",
-		"management_scope":   "threat_defense",
-		"policy_engine":      "cisco_ftd",
-		"threat_engine":      "snort_talos",
-		"malware_engine":     "amp_cloud",
-		"intelligence_feeds": "cisco_talos",
-		"integration_apis":   "available",
-		"high_availability":  "supported",
+	// Set policy information
+	fingerprint.PolicyInfo = map[string]interface{}{
+		"access_control_policies": "layer_3_4_7_inspection",
+		"intrusion_policies":      "signature_based_detection",
+		"file_policies":           "malware_detection_blocking",
+		"ssl_policies":            "decryption_inspection",
+		"identity_policies":       "user_group_based_access",
+		"qos_policies":            "traffic_prioritization",
+		"nat_policies":            "address_translation_rules",
+		"vpn_policies":            "encryption_authentication",
 	}
 
 	// Update protocol support
 	fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport,
-		"FTD_Capability_Request", "FTD_Policy_Deployment", "FTD_Threat_Detection")
+		"FTD_Status_Request", "FTD_Policy_Management", "FTD_Threat_Intelligence")
 }
 
-// loadClientCertificate loads the Cisco Test Root CA client certificate
-func (p *CiscoFTDManagementPlugin) loadClientCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(ciscoTestRootCACert), []byte(ciscoTestRootCAKey))
+// loadClientCertificate loads the Cisco FTD client certificate
+func (p *FTDPlugin) loadClientCertificate() (tls.Certificate, error) {
+	cert, err := tls.X509KeyPair([]byte(ciscoFTDCert), []byte(ciscoFTDKey))
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
 	}
@@ -578,19 +626,18 @@ func (p *CiscoFTDManagementPlugin) loadClientCertificate() (tls.Certificate, err
 }
 
 // createVendorInfo creates vendor information based on detection results
-func (p *CiscoFTDManagementPlugin) createVendorInfo(fingerprint *FTDFingerprint) VendorInfo {
+func (p *FTDPlugin) createVendorInfo(fingerprint *FTDFingerprint) VendorInfo {
 	vendor := VendorInfo{
-		Name:       "Cisco",
-		Product:    "FTD Management",
-		Vulnerable: fingerprint.Vulnerable,
+		Name:    "Cisco",
+		Product: "Firepower Threat Defense (FTD)",
 	}
 
-	if fingerprint.DetectionLevel == "enhanced" {
+	if fingerprint.AuthenticationMode == "certificate_accepted" {
 		vendor.Confidence = 100
-		vendor.Method = "Certificate-based FTD Management Protocol Communication"
-		vendor.Description = "Full FTD Management protocol access with detailed threat defense information"
-		if fingerprint.ServerModel != "" {
-			vendor.Product = fingerprint.ServerModel
+		vendor.Method = "Certificate-based FTD Protocol Communication"
+		vendor.Description = "Full Cisco FTD protocol access with detailed management information"
+		if fingerprint.DeviceModel != "" {
+			vendor.Product = fingerprint.DeviceModel
 		}
 		if fingerprint.ServiceVersion != "" {
 			vendor.Version = fingerprint.ServiceVersion
@@ -598,7 +645,7 @@ func (p *CiscoFTDManagementPlugin) createVendorInfo(fingerprint *FTDFingerprint)
 	} else {
 		vendor.Confidence = 75
 		vendor.Method = "Server Certificate and TLS Fingerprinting"
-		vendor.Description = "FTD Management service detected via certificate analysis and TLS patterns"
+		vendor.Description = "Cisco FTD service detected via certificate analysis and TLS patterns"
 		if fingerprint.ServerName != "" {
 			vendor.Product = fingerprint.ServerName
 		}
@@ -608,7 +655,7 @@ func (p *CiscoFTDManagementPlugin) createVendorInfo(fingerprint *FTDFingerprint)
 }
 
 // getTLSVersionString converts TLS version to string
-func (p *CiscoFTDManagementPlugin) getTLSVersionString(version uint16) string {
+func (p *FTDPlugin) getTLSVersionString(version uint16) string {
 	switch version {
 	case tls.VersionTLS10:
 		return "TLS 1.0"
@@ -624,7 +671,7 @@ func (p *CiscoFTDManagementPlugin) getTLSVersionString(version uint16) string {
 }
 
 // getCipherSuiteString converts cipher suite to string
-func (p *CiscoFTDManagementPlugin) getCipherSuiteString(cipherSuite uint16) string {
+func (p *FTDPlugin) getCipherSuiteString(cipherSuite uint16) string {
 	switch cipherSuite {
 	case tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
 		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
@@ -641,23 +688,23 @@ func (p *CiscoFTDManagementPlugin) getCipherSuiteString(cipherSuite uint16) stri
 	}
 }
 
-// PortPriority returns true if the port is a common FTD Management port
-func (p *CiscoFTDManagementPlugin) PortPriority(port uint16) bool {
+// PortPriority returns true if the port is a common Cisco FTD port
+func (p *FTDPlugin) PortPriority(port uint16) bool {
 	_, exists := commonFTDPorts[int(port)]
 	return exists
 }
 
 // Name returns the plugin name
-func (p *CiscoFTDManagementPlugin) Name() string {
-	return CISCO_FTD_MANAGEMENT
+func (p *FTDPlugin) Name() string {
+	return FTD
 }
 
 // Type returns the protocol type
-func (p *CiscoFTDManagementPlugin) Type() plugins.Protocol {
+func (p *FTDPlugin) Type() plugins.Protocol {
 	return plugins.TCP
 }
 
 // Priority returns the plugin priority
-func (p *CiscoFTDManagementPlugin) Priority() int {
-	return 650
+func (p *FTDPlugin) Priority() int {
+	return 670
 }
