@@ -1,4 +1,4 @@
-// Debug SIP plugin to understand detection failures
+// Fixed SIP plugin with proper target host extraction
 
 package sip
 
@@ -18,16 +18,6 @@ import (
 const SIP = "SIP"
 
 type Plugin struct{}
-
-// VendorInfo represents detected vendor information
-type VendorInfo struct {
-	Name        string
-	Product     string
-	Version     string
-	Confidence  int    // 1-100, higher is more confident
-	Method      string // How it was detected
-	Description string
-}
 
 // SIPResponse represents a parsed SIP response
 type SIPResponse struct {
@@ -218,7 +208,7 @@ func validateSIPResponse(response *SIPResponse, port int) bool {
 }
 
 // detectSIPVendor performs detection with extensive debug output
-func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port int) (*VendorInfo, *SIPResponse, error) {
+func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port int) (*SIPResponse, error) {
 	log.Printf("DEBUG: Starting SIP detection for %s:%d", target, port)
 
 	// Get source IP for SIP message construction
@@ -238,12 +228,12 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port i
 
 	if err != nil {
 		log.Printf("DEBUG: SendRecv failed: %v", err)
-		return nil, nil, fmt.Errorf("SendRecv failed: %v", err)
+		return nil, fmt.Errorf("SendRecv failed: %v", err)
 	}
 
 	if len(response) == 0 {
 		log.Printf("DEBUG: Empty response received")
-		return nil, nil, fmt.Errorf("empty response received")
+		return nil, fmt.Errorf("empty response received")
 	}
 
 	log.Printf("DEBUG: Raw response received: %q", string(response))
@@ -252,7 +242,7 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port i
 	parsedResponse, parseErr := parseSIPResponse(string(response), port)
 	if parseErr != nil {
 		log.Printf("DEBUG: Parse failed: %v", parseErr)
-		return nil, nil, fmt.Errorf("not a valid SIP response: %v", parseErr)
+		return nil, fmt.Errorf("not a valid SIP response: %v", parseErr)
 	}
 
 	log.Printf("DEBUG: Parse successful")
@@ -260,18 +250,18 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port i
 	// Additional SIP validation
 	if !validateSIPResponse(parsedResponse, port) {
 		log.Printf("DEBUG: Validation failed")
-		return nil, nil, fmt.Errorf("response failed SIP validation")
+		return nil, fmt.Errorf("response failed SIP validation")
 	}
 
 	log.Printf("DEBUG: Validation successful")
 	sipResponse = parsedResponse
 
 	log.Printf("DEBUG: SIP detection successful - Status: %d %s", sipResponse.StatusCode, sipResponse.ReasonPhrase)
-	return nil, sipResponse, nil
+	return sipResponse, nil
 }
 
 // createServiceWithVendorInfo creates a service object with debug output
-func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, response *SIPResponse) *plugins.Service {
+func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *plugins.Service {
 	log.Printf("DEBUG: Creating service with status %d %s", response.StatusCode, response.ReasonPhrase)
 
 	// Create ServiceSIP struct with basic information
@@ -349,19 +339,57 @@ func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, resp
 }
 
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	log.Printf("DEBUG: SIP plugin starting for %s:%d", target.Host, target.Address.Port())
-
-	// Extract target host for SIP message construction
-	targetHost := target.Host
+	// FIXED: Proper target host extraction
+	targetHost := ""
 	targetPort := int(target.Address.Port())
-	if targetPort != 5060 {
-		targetHost = fmt.Sprintf("%s:%d", target.Host, targetPort)
+
+	// Extract host from target.Address
+	if target.Address != nil {
+		if tcpAddr, ok := target.Address.(*net.TCPAddr); ok {
+			targetHost = tcpAddr.IP.String()
+		} else if udpAddr, ok := target.Address.(*net.UDPAddr); ok {
+			targetHost = udpAddr.IP.String()
+		} else {
+			// Fallback: extract from string representation
+			addrStr := target.Address.String()
+			if colonIndex := strings.LastIndex(addrStr, ":"); colonIndex > 0 {
+				targetHost = addrStr[:colonIndex]
+			}
+		}
 	}
 
+	// Fallback: use target.Host if available
+	if targetHost == "" && target.Host != "" {
+		targetHost = target.Host
+	}
+
+	// Final fallback: extract from Address string
+	if targetHost == "" {
+		addrStr := target.Address.String()
+		if colonIndex := strings.LastIndex(addrStr, ":"); colonIndex > 0 {
+			targetHost = addrStr[:colonIndex]
+		} else {
+			targetHost = addrStr
+		}
+	}
+
+	log.Printf("DEBUG: SIP plugin starting for %s:%d", targetHost, targetPort)
 	log.Printf("DEBUG: Target: %s, Port: %d", targetHost, targetPort)
 
-	// Attempt vendor detection with debug output
-	vendor, response, err := detectSIPVendor(conn, timeout, targetHost, targetPort)
+	// Ensure we have a valid target host
+	if targetHost == "" {
+		log.Printf("DEBUG: No target host found")
+		return nil, fmt.Errorf("no target host found")
+	}
+
+	// Create target string for SIP request
+	sipTarget := targetHost
+	if targetPort != 5060 {
+		sipTarget = fmt.Sprintf("%s:%d", targetHost, targetPort)
+	}
+
+	// Attempt detection with fixed target
+	response, err := detectSIPVendor(conn, timeout, sipTarget, targetPort)
 	if err != nil {
 		log.Printf("DEBUG: Detection failed: %v", err)
 		return nil, nil
@@ -374,8 +402,8 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 	}
 
 	log.Printf("DEBUG: Creating service result")
-	// Create service with detected vendor information
-	return createServiceWithVendorInfo(target, vendor, response), nil
+	// Create service with detected information
+	return createServiceWithVendorInfo(target, response), nil
 }
 
 func (p *Plugin) PortPriority(i uint16) bool {
