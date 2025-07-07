@@ -84,7 +84,6 @@ const (
 	ProtoLISP        = "lisp"
 	ProtoPXGRID      = "pxgrid"
 	ProtoRADIUS      = "radius"
-	ProtoSIC         = "sic"
 	ProtoZabbixAgent = "zabbix"
 	ProtoSIP         = "sip"
 )
@@ -283,10 +282,6 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoRADIUS:
 		var p ServiceRADIUS
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoSIC:
-		var p ServiceSIC
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 	case ProtoZabbixAgent:
@@ -700,31 +695,6 @@ type ServicePXGRID struct {
 
 	// Detection metadata
 	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
-}
-
-func (e ServiceSIC) Type() string { return ProtoSIC }
-
-type ServiceSIC struct {
-	// Vendor information
-	VendorName       string `json:"vendorName,omitempty"`
-	VendorProduct    string `json:"vendorProduct,omitempty"`
-	VendorVersion    string `json:"vendorVersion,omitempty"`
-	VendorConfidence int    `json:"vendorConfidence,omitempty"`
-	VendorMethod     string `json:"vendorMethod,omitempty"`
-	Vulnerable       bool   `json:"vulnerable,omitempty"`
-
-	// Detection and authentication information
-	DetectionLevel     string `json:"detectionLevel,omitempty"`     // "basic" or "enhanced"
-	AuthenticationMode string `json:"authenticationMode,omitempty"` // Authentication mode used
-
-	// TLS and certificate information
-	TLSInfo         map[string]interface{} `json:"tlsInfo,omitempty"`
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-
-	// SIC-specific features and capabilities
-	ManagementFeatures []string               `json:"managementFeatures,omitempty"`
-	ComponentStatus    []string               `json:"componentStatus,omitempty"`
-	SecurityInfo       map[string]interface{} `json:"securityInfo,omitempty"`
 }
 
 func (e ServiceRADIUS) Type() string { return ProtoRADIUS }

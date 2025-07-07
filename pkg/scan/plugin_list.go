@@ -68,12 +68,13 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ipsec"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/lisp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pxgrid"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/radius"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sic"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sip"
 
 	//testados:
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/openvpn"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sip"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
+
+	// nao consegui testar pq nao achei nenhum aberto na internet pra testar
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/radius"
 )
