@@ -121,9 +121,9 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 	// Create vendor information
 	vendor := p.createVendorInfo(fingerprint)
 
-	// Create service result using ServiceOpenVPN struct
+	// Create service result using ServiceOpenVPN struct with exact field names
 	serviceOpenVPN := plugins.ServiceOpenVPN{
-		// Vendor information
+		// Vendor information (exact field names from types.go)
 		VendorName:        vendor.Name,
 		VendorProduct:     vendor.Product,
 		VendorVersion:     vendor.Version,
@@ -131,7 +131,7 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		VendorMethod:      vendor.Method,
 		VendorDescription: vendor.Description,
 
-		// UDP fingerprint data
+		// UDP fingerprint data (exact field names from types.go)
 		ResponseTimeMs:    fingerprint.ResponseTime.Milliseconds(),
 		ResponseSize:      fingerprint.ResponseSize,
 		TimingConsistency: fingerprint.TimingConsistency,
@@ -141,7 +141,7 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		SupportsAuth:      fingerprint.SupportsAuth,
 		OpcodeSequence:    fingerprint.OpcodeSequence,
 
-		// Protocol information
+		// Protocol information (exact field names from types.go)
 		StandardPort:   fingerprint.StandardPort,
 		Transport:      fingerprint.Transport,
 		Encryption:     fingerprint.Encryption,
