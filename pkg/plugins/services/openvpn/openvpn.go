@@ -25,14 +25,13 @@ type VendorInfo struct {
 	Description string
 }
 
-// OpenVPNFingerprint represents collected OpenVPN fingerprinting data (NO TIMING)
+// OpenVPNFingerprint represents collected OpenVPN fingerprinting data
 type OpenVPNFingerprint struct {
 	ResponseSize     int
 	HandshakePattern string
-	TLSHandshake     bool
 	PacketStructure  string
-	SupportsAuth     bool    // Whether tls-auth/tls-crypt is detected
-	OpcodeSequence   []uint8 // Sequence of opcodes observed
+	SupportsAuth     bool
+	OpcodeSequence   []uint8
 	StandardPort     int
 	Transport        string
 	Encryption       string
@@ -40,19 +39,16 @@ type OpenVPNFingerprint struct {
 	Compression      []string
 	SessionID        string
 	DetectionMethod  string
-	TLSVersion       string
-	CipherSuite      string
-	CertificateInfo  map[string]interface{}
 }
 
 var (
 	// Only ports 1194 and 1723 for OpenVPN
 	commonOpenVPNPorts = map[int]struct{}{
 		1194: {}, // Standard OpenVPN UDP port
-		1723: {}, // Alternative OpenVPN port (also used by PPTP but we'll detect the difference)
+		1723: {}, // Alternative OpenVPN port
 	}
 
-	// Embedded self-signed certificate for OpenVPN authentication
+	// User-provided certificate and key
 	openVPNClientCert = `-----BEGIN CERTIFICATE-----
 MIIDbTCCAlWgAwIBAgIUPLZBCLor7PLzHgxxyz7VT/r3IIowDQYJKoZIhvcNAQEL
 BQAwRTELMAkGA1UEBhMCQVUxEzARBgNVBAgMClNvbWUtU3RhdGUxITAfBgNVBAoM
@@ -103,45 +99,13 @@ h5DFUwx4tdC4O4LLJCsY68ec2zuWlfgDH8vi7QECgYEAvAS6Ptf/JiREBoZfNFZy
 JUZpMq4NAl+cyrsNPakbxh8Ln/7JP1DiA8PGpwI4NmowAZ4H3lJdhlpzB0rwKk91
 kpxw33Zc5RKj80lJQRIejpE=
 -----END PRIVATE KEY-----`
-
-	// Known OpenVPN vendor patterns
-	vendorPatterns = map[string]VendorInfo{
-		"openvpn_community": {
-			Name:        "OpenVPN",
-			Product:     "OpenVPN Community Edition",
-			Confidence:  85,
-			Method:      "TLS Handshake Analysis",
-			Description: "Open source OpenVPN server",
-		},
-		"openvpn_access_server": {
-			Name:        "OpenVPN",
-			Product:     "OpenVPN Access Server",
-			Confidence:  90,
-			Method:      "TLS Handshake Analysis",
-			Description: "Commercial OpenVPN Access Server",
-		},
-		"pfsense_openvpn": {
-			Name:        "pfSense",
-			Product:     "pfSense OpenVPN",
-			Confidence:  80,
-			Method:      "TLS Handshake Analysis",
-			Description: "pfSense integrated OpenVPN server",
-		},
-		"mikrotik_openvpn": {
-			Name:        "MikroTik",
-			Product:     "RouterOS OpenVPN",
-			Confidence:  75,
-			Method:      "TLS Handshake Analysis",
-			Description: "MikroTik RouterOS OpenVPN implementation",
-		},
-	}
 )
 
 func init() {
 	plugins.RegisterPlugin(&Plugin{})
 }
 
-// Run performs OpenVPN detection using TLS handshake with embedded certificate
+// Run performs fast OpenVPN detection with quick fallback
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	// Only scan ports 1194 and 1723
 	port := int(target.Address.Port())
@@ -149,8 +113,8 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		return nil, nil
 	}
 
-	// Perform OpenVPN TLS handshake detection
-	fingerprint, err := p.performTLSHandshakeDetection(conn, timeout)
+	// Perform fast OpenVPN detection
+	fingerprint, err := p.performFastDetection(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +130,7 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 	// Create vendor information
 	vendor := p.createVendorInfo(fingerprint)
 
-	// Create service result using ServiceOpenVPN struct
+	// Create service result
 	serviceOpenVPN := plugins.ServiceOpenVPN{
 		// Vendor information
 		VendorName:        vendor.Name,
@@ -192,49 +156,48 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		SessionID:      fingerprint.SessionID,
 	}
 
-	service := plugins.CreateServiceFrom(target, serviceOpenVPN, fingerprint.TLSHandshake, "", plugins.UDP)
+	service := plugins.CreateServiceFrom(target, serviceOpenVPN, false, "", plugins.UDP)
 	return service, nil
 }
 
-// performTLSHandshakeDetection performs OpenVPN detection using TLS handshake
-func (p *Plugin) performTLSHandshakeDetection(conn net.Conn, timeout time.Duration) (*OpenVPNFingerprint, error) {
-	// Set connection timeout
+// performFastDetection performs fast OpenVPN detection with quick fallback
+func (p *Plugin) performFastDetection(conn net.Conn, timeout time.Duration) (*OpenVPNFingerprint, error) {
+	// Set overall timeout
 	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
 
 	fingerprint := &OpenVPNFingerprint{
-		OpcodeSequence:  []uint8{},
-		Authentication:  []string{},
-		Compression:     []string{},
-		CertificateInfo: make(map[string]interface{}),
+		OpcodeSequence: []uint8{},
+		Authentication: []string{},
+		Compression:    []string{},
 	}
 
-	// Method 1: TLS handshake with client certificate (most reliable)
-	confidence := p.tryTLSHandshakeWithCert(conn, fingerprint)
-	if confidence >= 30 {
-		fingerprint.DetectionMethod = "TLS_Handshake_With_Certificate"
-		return fingerprint, nil
-	}
-
-	// Method 2: Basic TLS handshake (fallback)
-	confidence = p.tryBasicTLSHandshake(conn, fingerprint)
+	// Method 1: Quick TLS attempt (2 seconds max)
+	confidence := p.tryQuickTLS(conn, fingerprint)
 	if confidence >= 25 {
-		fingerprint.DetectionMethod = "Basic_TLS_Handshake"
+		fingerprint.DetectionMethod = "Quick_TLS"
 		return fingerprint, nil
 	}
 
-	// Method 3: OpenVPN control packets (fallback)
-	confidence = p.tryOpenVPNControlPackets(conn, fingerprint)
+	// Method 2: Simple OpenVPN packets (3 seconds max)
+	confidence = p.trySimpleOpenVPN(conn, fingerprint)
 	if confidence >= 20 {
-		fingerprint.DetectionMethod = "OpenVPN_Control_Packets"
+		fingerprint.DetectionMethod = "Simple_OpenVPN"
+		return fingerprint, nil
+	}
+
+	// Method 3: Basic UDP probe (2 seconds max)
+	confidence = p.tryBasicUDPProbe(conn, fingerprint)
+	if confidence >= 15 {
+		fingerprint.DetectionMethod = "Basic_UDP_Probe"
 		return fingerprint, nil
 	}
 
 	return nil, nil // Not confident enough
 }
 
-// tryTLSHandshakeWithCert attempts TLS handshake with embedded client certificate
-func (p *Plugin) tryTLSHandshakeWithCert(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
+// tryQuickTLS attempts quick TLS handshake (2 seconds max)
+func (p *Plugin) tryQuickTLS(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
 	confidence := 0
 
 	// Load client certificate
@@ -243,120 +206,68 @@ func (p *Plugin) tryTLSHandshakeWithCert(conn net.Conn, fingerprint *OpenVPNFing
 		return confidence
 	}
 
-	// Create TLS config with client certificate
+	// Create TLS config with short timeout
 	tlsConfig := &tls.Config{
 		Certificates:       []tls.Certificate{clientCert},
 		InsecureSkipVerify: true,
 		ServerName:         "",
 	}
 
-	// Attempt TLS handshake over UDP (OpenVPN style)
-	tlsConn := tls.Client(conn, tlsConfig)
-	err = tlsConn.Handshake()
-	if err != nil {
-		// TLS handshake failed, but analyze the error for OpenVPN patterns
-		confidence += p.analyzeTLSError(err, fingerprint)
-		return confidence
-	}
-
-	// TLS handshake succeeded
-	fingerprint.TLSHandshake = true
-	confidence += 50
-
-	// Analyze TLS connection
-	state := tlsConn.ConnectionState()
-	fingerprint.TLSVersion = p.getTLSVersionString(state.Version)
-	fingerprint.CipherSuite = p.getCipherSuiteString(state.CipherSuite)
-
-	// Extract certificate information
-	if len(state.PeerCertificates) > 0 {
-		serverCert := state.PeerCertificates[0]
-		fingerprint.CertificateInfo["subject"] = serverCert.Subject.String()
-		fingerprint.CertificateInfo["issuer"] = serverCert.Issuer.String()
-		confidence += 20
-	}
-
-	// Try OpenVPN protocol communication over TLS
-	confidence += p.tryOpenVPNProtocolOverTLS(tlsConn, fingerprint)
-
-	fingerprint.PacketStructure = "OpenVPN_TLS_Handshake"
-	fingerprint.Encryption = "TLS"
-	fingerprint.Authentication = append(fingerprint.Authentication, "Client_Certificate")
-
-	return confidence
-}
-
-// tryBasicTLSHandshake attempts basic TLS handshake without client certificate
-func (p *Plugin) tryBasicTLSHandshake(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
-	confidence := 0
-
-	// Create basic TLS config
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-		ServerName:         "",
-	}
+	// Set short deadline for TLS attempt
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	// Attempt TLS handshake
 	tlsConn := tls.Client(conn, tlsConfig)
 	err = tlsConn.Handshake()
 	if err != nil {
 		// Analyze TLS error for OpenVPN patterns
-		confidence += p.analyzeTLSError(err, fingerprint)
+		errorStr := strings.ToLower(err.Error())
+		if strings.Contains(errorStr, "certificate") || strings.Contains(errorStr, "handshake") {
+			confidence += 20
+			fingerprint.PacketStructure = "TLS_Error_Pattern"
+			fingerprint.SupportsAuth = true
+		}
 		return confidence
 	}
 
 	// TLS handshake succeeded
-	fingerprint.TLSHandshake = true
 	confidence += 40
-
-	// Analyze TLS connection
-	state := tlsConn.ConnectionState()
-	fingerprint.TLSVersion = p.getTLSVersionString(state.Version)
-	fingerprint.CipherSuite = p.getCipherSuiteString(state.CipherSuite)
-
-	// Extract certificate information
-	if len(state.PeerCertificates) > 0 {
-		serverCert := state.PeerCertificates[0]
-		fingerprint.CertificateInfo["subject"] = serverCert.Subject.String()
-		fingerprint.CertificateInfo["issuer"] = serverCert.Issuer.String()
-
-		// Check for OpenVPN patterns in certificate
-		confidence += p.analyzeOpenVPNCertificate(serverCert, fingerprint)
-	}
-
-	fingerprint.PacketStructure = "Basic_TLS_Handshake"
+	fingerprint.PacketStructure = "TLS_Handshake_Success"
 	fingerprint.Encryption = "TLS"
+	fingerprint.Authentication = append(fingerprint.Authentication, "Client_Certificate")
 
 	return confidence
 }
 
-// tryOpenVPNControlPackets attempts OpenVPN control packet communication
-func (p *Plugin) tryOpenVPNControlPackets(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
+// trySimpleOpenVPN attempts simple OpenVPN packet exchange (3 seconds max)
+func (p *Plugin) trySimpleOpenVPN(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
 	confidence := 0
 
-	// Try different OpenVPN control packets
+	// Set deadline for OpenVPN attempt
+	conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	// Try basic OpenVPN packets
 	packets := [][]byte{
-		p.createOpenVPNClientHello(),
-		p.createOpenVPNResetPacket(),
-		p.createOpenVPNAuthPacket(),
+		p.createSimpleClientHello(),
+		p.createSimpleResetPacket(),
 	}
 
 	for _, packet := range packets {
-		conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 		_, err := conn.Write(packet)
 		if err != nil {
 			continue
 		}
 
-		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 		response := make([]byte, 1500)
 		n, err := conn.Read(response)
 		if err != nil {
 			continue
 		}
 
-		// Analyze OpenVPN response
-		packetConfidence := p.analyzeOpenVPNResponse(response[:n], fingerprint)
+		// Analyze response for OpenVPN patterns
+		packetConfidence := p.analyzeSimpleResponse(response[:n], fingerprint)
 		if packetConfidence > confidence {
 			confidence = packetConfidence
 			fingerprint.ResponseSize = n
@@ -364,82 +275,52 @@ func (p *Plugin) tryOpenVPNControlPackets(conn net.Conn, fingerprint *OpenVPNFin
 	}
 
 	if confidence > 0 {
-		fingerprint.PacketStructure = "OpenVPN_Control_Packets"
+		fingerprint.PacketStructure = "OpenVPN_Packet_Response"
 	}
 
 	return confidence
 }
 
-// analyzeTLSError analyzes TLS errors for OpenVPN patterns
-func (p *Plugin) analyzeTLSError(err error, fingerprint *OpenVPNFingerprint) int {
-	confidence := 0
-	errorStr := strings.ToLower(err.Error())
-
-	// OpenVPN-specific TLS error patterns
-	if strings.Contains(errorStr, "certificate") {
-		confidence += 15
-		fingerprint.Authentication = append(fingerprint.Authentication, "Certificate_Required")
-	}
-
-	if strings.Contains(errorStr, "handshake") {
-		confidence += 10
-		fingerprint.PacketStructure = "TLS_Handshake_Error"
-	}
-
-	if strings.Contains(errorStr, "tls") {
-		confidence += 10
-		fingerprint.Encryption = "TLS"
-	}
-
-	// OpenVPN often requires specific TLS configurations
-	if strings.Contains(errorStr, "protocol") || strings.Contains(errorStr, "version") {
-		confidence += 15
-	}
-
-	return confidence
-}
-
-// tryOpenVPNProtocolOverTLS attempts OpenVPN protocol communication over TLS
-func (p *Plugin) tryOpenVPNProtocolOverTLS(tlsConn *tls.Conn, fingerprint *OpenVPNFingerprint) int {
+// tryBasicUDPProbe attempts basic UDP probe (2 seconds max)
+func (p *Plugin) tryBasicUDPProbe(conn net.Conn, fingerprint *OpenVPNFingerprint) int {
 	confidence := 0
 
-	// Send OpenVPN control message over TLS
-	controlMsg := p.createOpenVPNControlMessage()
-	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err := tlsConn.Write(controlMsg)
+	// Set deadline for UDP probe
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	// Send simple probe
+	probe := []byte("OpenVPN")
+	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_, err := conn.Write(probe)
 	if err != nil {
 		return confidence
 	}
 
-	// Read response
-	tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// Read any response
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	response := make([]byte, 1500)
-	n, err := tlsConn.Read(response)
+	n, err := conn.Read(response)
 	if err != nil {
 		return confidence
 	}
 
-	// Analyze OpenVPN protocol response
-	confidence += p.analyzeOpenVPNProtocolResponse(response[:n], fingerprint)
 	fingerprint.ResponseSize = n
 
-	return confidence
-}
-
-// analyzeOpenVPNCertificate analyzes certificate for OpenVPN patterns
-func (p *Plugin) analyzeOpenVPNCertificate(cert interface{}, fingerprint *OpenVPNFingerprint) int {
-	confidence := 0
-
-	// This would analyze the certificate for OpenVPN-specific patterns
-	// For now, just add basic confidence for having a certificate
+	// Any response on OpenVPN ports gets some confidence
 	confidence += 15
-	fingerprint.SupportsAuth = true
+	fingerprint.PacketStructure = "UDP_Response_OpenVPN_Port"
+
+	// Check for any patterns
+	responseStr := strings.ToLower(string(response))
+	if strings.Contains(responseStr, "openvpn") || strings.Contains(responseStr, "tls") {
+		confidence += 10
+	}
 
 	return confidence
 }
 
-// analyzeOpenVPNResponse analyzes response for OpenVPN patterns
-func (p *Plugin) analyzeOpenVPNResponse(response []byte, fingerprint *OpenVPNFingerprint) int {
+// analyzeSimpleResponse analyzes response for basic OpenVPN patterns
+func (p *Plugin) analyzeSimpleResponse(response []byte, fingerprint *OpenVPNFingerprint) int {
 	confidence := 0
 
 	if len(response) < 1 {
@@ -451,63 +332,35 @@ func (p *Plugin) analyzeOpenVPNResponse(response []byte, fingerprint *OpenVPNFin
 		opcode := response[0] >> 3
 		fingerprint.OpcodeSequence = append(fingerprint.OpcodeSequence, opcode)
 
-		// OpenVPN opcodes
+		// OpenVPN opcodes (1-10)
 		if opcode >= 1 && opcode <= 10 {
-			confidence += 40
+			confidence += 30
 			fingerprint.HandshakePattern = fmt.Sprintf("OpenVPN_Opcode_%d", opcode)
 
 			// Check for session ID
 			if len(response) >= 9 {
 				sessionID := response[1:9]
 				fingerprint.SessionID = fmt.Sprintf("%x", sessionID)
-				confidence += 20
-			}
-
-			// Check for packet ID
-			if len(response) >= 13 {
 				confidence += 15
 			}
 		}
 	}
 
-	return confidence
-}
-
-// analyzeOpenVPNProtocolResponse analyzes OpenVPN protocol response
-func (p *Plugin) analyzeOpenVPNProtocolResponse(response []byte, fingerprint *OpenVPNFingerprint) int {
-	confidence := 0
-
-	// Analyze response for OpenVPN protocol patterns
+	// Check response content
 	responseStr := strings.ToLower(string(response))
-
 	if strings.Contains(responseStr, "openvpn") {
-		confidence += 30
-	}
-
-	if strings.Contains(responseStr, "auth") {
 		confidence += 20
+	}
+	if strings.Contains(responseStr, "auth") {
+		confidence += 15
 		fingerprint.SupportsAuth = true
 	}
 
-	if strings.Contains(responseStr, "tls") {
-		confidence += 15
-		fingerprint.Encryption = "TLS"
-	}
-
 	return confidence
 }
 
-// loadClientCertificate loads the embedded client certificate
-func (p *Plugin) loadClientCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(openVPNClientCert), []byte(openVPNClientKey))
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
-	}
-	return cert, nil
-}
-
-// createOpenVPNClientHello creates an OpenVPN client hello packet
-func (p *Plugin) createOpenVPNClientHello() []byte {
+// createSimpleClientHello creates a simple OpenVPN client hello
+func (p *Plugin) createSimpleClientHello() []byte {
 	packet := make([]byte, 14)
 
 	// Opcode (P_CONTROL_HARD_RESET_CLIENT_V1) and key ID
@@ -528,8 +381,8 @@ func (p *Plugin) createOpenVPNClientHello() []byte {
 	return packet
 }
 
-// createOpenVPNResetPacket creates an OpenVPN reset packet
-func (p *Plugin) createOpenVPNResetPacket() []byte {
+// createSimpleResetPacket creates a simple OpenVPN reset packet
+func (p *Plugin) createSimpleResetPacket() []byte {
 	packet := make([]byte, 14)
 
 	// Opcode (P_CONTROL_HARD_RESET_CLIENT_V2) and key ID
@@ -550,32 +403,13 @@ func (p *Plugin) createOpenVPNResetPacket() []byte {
 	return packet
 }
 
-// createOpenVPNAuthPacket creates an OpenVPN auth packet
-func (p *Plugin) createOpenVPNAuthPacket() []byte {
-	packet := make([]byte, 20)
-
-	// Opcode with auth flag
-	packet[0] = (2 << 3) | 1 // Opcode 2, Key ID 1 (indicates auth)
-
-	// Session ID (8 bytes)
-	rand.Read(packet[1:9])
-
-	// Packet ID (4 bytes)
-	packet[9] = 0
-	packet[10] = 0
-	packet[11] = 0
-	packet[12] = 1
-
-	// Auth data
-	rand.Read(packet[13:20])
-
-	return packet
-}
-
-// createOpenVPNControlMessage creates an OpenVPN control message
-func (p *Plugin) createOpenVPNControlMessage() []byte {
-	// Simple OpenVPN control message
-	return []byte("OpenVPN Control Message")
+// loadClientCertificate loads the user-provided client certificate
+func (p *Plugin) loadClientCertificate() (tls.Certificate, error) {
+	cert, err := tls.X509KeyPair([]byte(openVPNClientCert), []byte(openVPNClientKey))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
+	}
+	return cert, nil
 }
 
 // createVendorInfo creates vendor information based on fingerprinting results
@@ -584,74 +418,41 @@ func (p *Plugin) createVendorInfo(fingerprint *OpenVPNFingerprint) VendorInfo {
 		Name:       "OpenVPN",
 		Product:    "OpenVPN Server",
 		Confidence: 60,
-		Method:     "TLS Handshake Analysis",
+		Method:     "Fast UDP Detection",
 	}
 
-	// Analyze patterns for vendor detection
-	if fingerprint.TLSHandshake {
+	// Enhance confidence based on detection method
+	switch fingerprint.DetectionMethod {
+	case "Quick_TLS":
 		vendor.Confidence += 20
-	}
-
-	if fingerprint.SupportsAuth {
-		vendor = vendorPatterns["openvpn_community"]
-	}
-
-	// Enhance confidence based on fingerprint quality
-	if len(fingerprint.OpcodeSequence) > 0 {
-		vendor.Confidence += 10
-	}
-
-	if fingerprint.TLSHandshake {
+		vendor.Product = "OpenVPN Server (TLS)"
+	case "Simple_OpenVPN":
 		vendor.Confidence += 15
+		vendor.Product = "OpenVPN Server (Protocol)"
+	case "Basic_UDP_Probe":
+		vendor.Confidence += 10
+		vendor.Product = "OpenVPN Server (Basic)"
 	}
 
-	// Set version based on TLS version
-	if fingerprint.TLSVersion != "" {
-		if strings.Contains(fingerprint.TLSVersion, "1.3") {
-			vendor.Version = "OpenVPN 2.5+"
-		} else if strings.Contains(fingerprint.TLSVersion, "1.2") {
-			vendor.Version = "OpenVPN 2.4+"
-		} else {
-			vendor.Version = "OpenVPN 2.0-2.3"
-		}
+	// Enhance confidence based on features
+	if fingerprint.SupportsAuth {
+		vendor.Confidence += 5
+	}
+	if len(fingerprint.OpcodeSequence) > 0 {
+		vendor.Confidence += 5
 	}
 
-	// Update method based on detection method
-	vendor.Method = fmt.Sprintf("TLS Handshake Analysis (%s)", fingerprint.DetectionMethod)
+	// Set version based on features
+	if fingerprint.SupportsAuth {
+		vendor.Version = "OpenVPN 2.4+"
+	} else {
+		vendor.Version = "OpenVPN 2.0+"
+	}
+
+	// Update method
+	vendor.Method = fmt.Sprintf("Fast UDP Detection (%s)", fingerprint.DetectionMethod)
 
 	return vendor
-}
-
-// getTLSVersionString converts TLS version to string
-func (p *Plugin) getTLSVersionString(version uint16) string {
-	switch version {
-	case tls.VersionTLS10:
-		return "TLS 1.0"
-	case tls.VersionTLS11:
-		return "TLS 1.1"
-	case tls.VersionTLS12:
-		return "TLS 1.2"
-	case tls.VersionTLS13:
-		return "TLS 1.3"
-	default:
-		return fmt.Sprintf("TLS 0x%04x", version)
-	}
-}
-
-// getCipherSuiteString converts cipher suite to string
-func (p *Plugin) getCipherSuiteString(cipherSuite uint16) string {
-	switch cipherSuite {
-	case tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
-		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
-	case tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
-		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
-	case tls.TLS_RSA_WITH_AES_256_GCM_SHA384:
-		return "TLS_RSA_WITH_AES_256_GCM_SHA384"
-	case tls.TLS_RSA_WITH_AES_128_GCM_SHA256:
-		return "TLS_RSA_WITH_AES_128_GCM_SHA256"
-	default:
-		return fmt.Sprintf("0x%04x", cipherSuite)
-	}
 }
 
 // PortPriority returns true if the port is a common OpenVPN port
