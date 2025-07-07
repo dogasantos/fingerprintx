@@ -1,8 +1,12 @@
 package zabbixagent
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -12,94 +16,21 @@ type ZabbixAgentPlugin struct{}
 
 const ZABBIX_AGENT = "zabbix-agent"
 
-// DetectionResult holds the results of precise Zabbix detection
+// DetectionResult holds the results of strict Zabbix detection
 type DetectionResult struct {
 	IsZabbix        bool
 	DetectionMethod string
 	Confidence      int
-	ConnectionTime  time.Duration
-	BehaviorPattern string
-	SpecificTests   []string
+	Evidence        []string
+	AgentVersion    string
+	ProtocolVersion string
 }
 
 var (
-	// Common Zabbix ports
-	commonZabbixPorts = map[int]struct{}{
+	// ONLY standard Zabbix ports - no exceptions
+	standardZabbixPorts = map[int]struct{}{
 		10050: {}, // Zabbix Agent (passive)
 		10051: {}, // Zabbix Server/Proxy (active)
-	}
-
-	// Zabbix-specific test payloads designed to trigger unique behaviors
-	zabbixSpecificTests = []struct {
-		name        string
-		payload     []byte
-		description string
-		expectation string
-	}{
-		{
-			name:        "zabbix_header",
-			payload:     []byte{0x5A, 0x42, 0x58, 0x44, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65, 0x73, 0x74},
-			description: "Zabbix ZBXD protocol header",
-			expectation: "Zabbix-specific protocol handling",
-		},
-		{
-			name:        "agent_ping",
-			payload:     []byte("agent.ping\n"),
-			description: "Zabbix agent.ping item",
-			expectation: "Zabbix item key recognition",
-		},
-		{
-			name:        "agent_version",
-			payload:     []byte("agent.version\n"),
-			description: "Zabbix agent.version item",
-			expectation: "Zabbix item key recognition",
-		},
-		{
-			name:        "system_uptime",
-			payload:     []byte("system.uptime\n"),
-			description: "Zabbix system.uptime item",
-			expectation: "Zabbix item key recognition",
-		},
-		{
-			name:        "invalid_zabbix_key",
-			payload:     []byte("zabbix.invalid.test.key.12345\n"),
-			description: "Invalid but Zabbix-formatted key",
-			expectation: "Zabbix key format recognition",
-		},
-		{
-			name:        "malformed_zabbix_header",
-			payload:     []byte{0x5A, 0x42, 0x58, 0x44, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
-			description: "Malformed ZBXD header",
-			expectation: "Zabbix protocol error handling",
-		},
-	}
-
-	// Non-Zabbix payloads for comparison (should behave differently)
-	nonZabbixTests = []struct {
-		name        string
-		payload     []byte
-		description string
-	}{
-		{
-			name:        "http_request",
-			payload:     []byte("GET / HTTP/1.1\r\nHost: test\r\n\r\n"),
-			description: "HTTP request",
-		},
-		{
-			name:        "ssh_banner",
-			payload:     []byte("SSH-2.0-Test\r\n"),
-			description: "SSH protocol banner",
-		},
-		{
-			name:        "mysql_handshake",
-			payload:     []byte{0x00, 0x00, 0x00, 0x0a, 0x35, 0x2e, 0x37, 0x2e, 0x32, 0x39},
-			description: "MySQL-like handshake",
-		},
-		{
-			name:        "random_binary",
-			payload:     []byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07},
-			description: "Random binary data",
-		},
 	}
 )
 
@@ -107,25 +38,31 @@ func init() {
 	plugins.RegisterPlugin(&ZabbixAgentPlugin{})
 }
 
-// Run performs precise Zabbix Agent detection without timing-based false positives
+// Run performs STRICT Zabbix Agent detection - only returns match if 100% certain
 func (p *ZabbixAgentPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	// STRICT REQUIREMENT 1: Must be on standard Zabbix port
+	port := int(target.Address.Port())
+	if _, isZabbixPort := standardZabbixPorts[port]; !isZabbixPort {
+		return nil, nil // Not on Zabbix port = definitely not Zabbix
+	}
+
 	startTime := time.Now()
 
-	// Perform precise detection based on Zabbix-specific behaviors
-	result, err := p.detectPreciseZabbix(conn, timeout)
+	// Perform strict detection requiring definitive Zabbix evidence
+	result, err := p.detectStrictZabbix(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	// If not detected as Zabbix, return nil
-	if !result.IsZabbix {
-		return nil, nil
+	// STRICT REQUIREMENT 2: Must have definitive Zabbix evidence
+	if !result.IsZabbix || result.Confidence < 95 {
+		return nil, nil // Not 100% certain = no detection
 	}
 
-	result.ConnectionTime = time.Since(startTime)
+	responseTime := time.Since(startTime)
 
-	// Create vendor information for precise detection
-	vendor := p.createPreciseVendorInfo(result)
+	// Create vendor information for confirmed Zabbix detection
+	vendor := p.createConfirmedVendorInfo(result)
 
 	// Create service using ServiceZabbixAgent struct
 	serviceZabbixAgent := plugins.ServiceZabbixAgent{
@@ -137,12 +74,13 @@ func (p *ZabbixAgentPlugin) Run(conn net.Conn, timeout time.Duration, target plu
 		VendorMethod:      vendor.Method,
 		VendorDescription: vendor.Description,
 
-		// Agent information (limited for silent detection)
-		AgentVersion:    "unknown (silent)",
-		AgentVariant:    0, // Unknown
-		ResponseTime:    result.ConnectionTime.Milliseconds(),
-		ProtocolVersion: "unknown",
-		PassiveChecks:   true, // Assumed for port 10050
+		// Agent information
+		AgentVersion:    result.AgentVersion,
+		AgentVariant:    p.determineAgentVariant(result.AgentVersion),
+		ResponseTime:    responseTime.Milliseconds(),
+		ProtocolVersion: result.ProtocolVersion,
+		PassiveChecks:   port == 10050,
+		ActiveChecks:    port == 10051,
 
 		// Detection metadata
 		DetectionLevel: result.DetectionMethod,
@@ -152,10 +90,10 @@ func (p *ZabbixAgentPlugin) Run(conn net.Conn, timeout time.Duration, target plu
 	return service, nil
 }
 
-// detectPreciseZabbix performs detection based on Zabbix-specific behavior patterns
-func (p *ZabbixAgentPlugin) detectPreciseZabbix(conn net.Conn, timeout time.Duration) (*DetectionResult, error) {
+// detectStrictZabbix performs STRICT detection requiring definitive Zabbix evidence
+func (p *ZabbixAgentPlugin) detectStrictZabbix(conn net.Conn, timeout time.Duration) (*DetectionResult, error) {
 	result := &DetectionResult{
-		SpecificTests: []string{},
+		Evidence: []string{},
 	}
 
 	// Set overall timeout
@@ -163,201 +101,323 @@ func (p *ZabbixAgentPlugin) detectPreciseZabbix(conn net.Conn, timeout time.Dura
 	conn.SetDeadline(deadline)
 	defer conn.SetDeadline(time.Time{})
 
-	// Method 1: Zabbix-specific protocol behavior analysis
-	if p.analyzeZabbixProtocolBehavior(conn, result) {
+	// Method 1: Try to get actual Zabbix responses (highest confidence)
+	if p.tryGetZabbixResponses(conn, result) {
 		result.IsZabbix = true
-		result.DetectionMethod = "Zabbix Protocol Behavior"
+		result.DetectionMethod = "Zabbix Protocol Response"
+		result.Confidence = 99 // Near certain with actual responses
 		return result, nil
 	}
 
-	// Method 2: Differential behavior analysis (Zabbix vs non-Zabbix payloads)
-	if p.analyzeDifferentialBehavior(conn, result) {
+	// Method 2: Detect Zabbix protocol errors (high confidence)
+	if p.detectZabbixProtocolErrors(conn, result) {
 		result.IsZabbix = true
-		result.DetectionMethod = "Differential Behavior"
+		result.DetectionMethod = "Zabbix Protocol Error"
+		result.Confidence = 95 // High confidence with protocol errors
 		return result, nil
 	}
 
-	// Method 3: Port-specific behavior (only for known Zabbix ports with additional validation)
-	if p.analyzePortSpecificBehavior(conn, result) {
+	// Method 3: Detect Zabbix-specific protocol handling (medium-high confidence)
+	if p.detectZabbixProtocolHandling(conn, result) {
 		result.IsZabbix = true
-		result.DetectionMethod = "Port-Specific Behavior"
+		result.DetectionMethod = "Zabbix Protocol Handling"
+		result.Confidence = 90 // Good confidence with protocol handling
 		return result, nil
 	}
 
+	// If none of the strict methods work, it's not Zabbix
 	return result, nil
 }
 
-// analyzeZabbixProtocolBehavior analyzes Zabbix-specific protocol behaviors
-func (p *ZabbixAgentPlugin) analyzeZabbixProtocolBehavior(conn net.Conn, result *DetectionResult) bool {
-	zabbixBehaviors := 0
-	totalTests := len(zabbixSpecificTests)
+// tryGetZabbixResponses attempts to get actual Zabbix responses
+func (p *ZabbixAgentPlugin) tryGetZabbixResponses(conn net.Conn, result *DetectionResult) bool {
+	// Test items that might work even without authentication
+	testItems := []string{
+		"agent.ping",
+		"agent.version",
+		"agent.hostname",
+		"system.uptime",
+	}
 
-	for _, test := range zabbixSpecificTests {
-		behavior := p.testZabbixSpecificPayload(conn, test)
-		if behavior != "" {
-			zabbixBehaviors++
-			result.SpecificTests = append(result.SpecificTests, fmt.Sprintf("%s: %s", test.name, behavior))
+	for _, item := range testItems {
+		response, err := p.sendZabbixRequest(conn, item)
+		if err != nil {
+			continue
+		}
+
+		// Check for actual Zabbix responses
+		if p.isValidZabbixResponse(response, item, result) {
+			return true
 		}
 	}
 
-	// If we see Zabbix-specific behaviors in multiple tests
-	if zabbixBehaviors >= 2 {
-		result.Confidence = 70 + (zabbixBehaviors * 5) // Higher confidence with more behaviors
-		result.BehaviorPattern = fmt.Sprintf("Zabbix-specific behaviors: %d/%d", zabbixBehaviors, totalTests)
+	return false
+}
+
+// detectZabbixProtocolErrors looks for Zabbix-specific error messages
+func (p *ZabbixAgentPlugin) detectZabbixProtocolErrors(conn net.Conn, result *DetectionResult) bool {
+	// Send requests that should trigger Zabbix-specific errors
+	errorTests := []struct {
+		item     string
+		expected []string
+	}{
+		{
+			item: "invalid.zabbix.key.test.12345",
+			expected: []string{
+				"ZBX_NOTSUPPORTED",
+				"Unsupported item key",
+				"NOTSUPPORTED",
+			},
+		},
+		{
+			item: "system.run[invalid_command_test_12345]",
+			expected: []string{
+				"ZBX_NOTSUPPORTED",
+				"Remote commands are not enabled",
+				"NOTSUPPORTED",
+			},
+		},
+	}
+
+	for _, test := range errorTests {
+		response, err := p.sendZabbixRequest(conn, test.item)
+		if err != nil {
+			continue
+		}
+
+		responseStr := string(response)
+		for _, expectedError := range test.expected {
+			if strings.Contains(responseStr, expectedError) {
+				result.Evidence = append(result.Evidence, fmt.Sprintf("Zabbix error: %s", expectedError))
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// detectZabbixProtocolHandling detects Zabbix-specific protocol handling
+func (p *ZabbixAgentPlugin) detectZabbixProtocolHandling(conn net.Conn, result *DetectionResult) bool {
+	// Test ZBXD protocol header handling
+	if p.testZBXDProtocol(conn, result) {
+		return true
+	}
+
+	// Test JSON protocol (Zabbix 7.0+)
+	if p.testZabbixJSONProtocol(conn, result) {
 		return true
 	}
 
 	return false
 }
 
-// analyzeDifferentialBehavior compares behavior with Zabbix vs non-Zabbix payloads
-func (p *ZabbixAgentPlugin) analyzeDifferentialBehavior(conn net.Conn, result *DetectionResult) bool {
-	zabbixResponses := 0
-	nonZabbixResponses := 0
+// sendZabbixRequest sends a Zabbix item request and returns response
+func (p *ZabbixAgentPlugin) sendZabbixRequest(conn net.Conn, item string) ([]byte, error) {
+	// Set timeouts
+	conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
-	// Test Zabbix-specific payloads
-	for _, test := range zabbixSpecificTests[:3] { // Test first 3 to avoid too many requests
-		behavior := p.testPayloadBehavior(conn, test.payload, test.name)
-		if behavior == "processed" || behavior == "recognized" {
-			zabbixResponses++
-		}
+	// Send plaintext request (legacy protocol)
+	_, err := conn.Write([]byte(item + "\n"))
+	if err != nil {
+		return nil, err
 	}
 
-	// Test non-Zabbix payloads
-	for _, test := range nonZabbixTests[:3] { // Test first 3
-		behavior := p.testPayloadBehavior(conn, test.payload, test.name)
-		if behavior == "processed" || behavior == "recognized" {
-			nonZabbixResponses++
-		}
+	// Read response
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+	if err != nil {
+		return nil, err
 	}
 
-	// If Zabbix payloads are handled differently than non-Zabbix payloads
-	if zabbixResponses > 0 && zabbixResponses > nonZabbixResponses {
-		result.Confidence = 65
-		result.BehaviorPattern = fmt.Sprintf("Differential behavior: Zabbix=%d, Non-Zabbix=%d", zabbixResponses, nonZabbixResponses)
+	return response[:n], nil
+}
+
+// isValidZabbixResponse checks if response is a valid Zabbix response
+func (p *ZabbixAgentPlugin) isValidZabbixResponse(response []byte, item string, result *DetectionResult) bool {
+	responseStr := string(response)
+
+	// Check for Zabbix version response
+	if item == "agent.version" && p.isZabbixVersionResponse(responseStr, result) {
+		return true
+	}
+
+	// Check for agent.ping response
+	if item == "agent.ping" && (responseStr == "1" || responseStr == "1\n") {
+		result.Evidence = append(result.Evidence, "Valid agent.ping response: 1")
+		return true
+	}
+
+	// Check for system.uptime numeric response
+	if item == "system.uptime" && p.isNumericResponse(responseStr) {
+		result.Evidence = append(result.Evidence, "Valid system.uptime numeric response")
+		return true
+	}
+
+	// Check for hostname response
+	if item == "agent.hostname" && p.isValidHostnameResponse(responseStr) {
+		result.Evidence = append(result.Evidence, "Valid agent.hostname response")
 		return true
 	}
 
 	return false
 }
 
-// analyzePortSpecificBehavior analyzes behavior specific to Zabbix ports with additional validation
-func (p *ZabbixAgentPlugin) analyzePortSpecificBehavior(conn net.Conn, result *DetectionResult) bool {
-	// Get the target port
-	remoteAddr := conn.RemoteAddr().String()
+// isZabbixVersionResponse checks if response is a Zabbix version
+func (p *ZabbixAgentPlugin) isZabbixVersionResponse(response string, result *DetectionResult) bool {
+	response = strings.TrimSpace(response)
 
-	// Check if this is a known Zabbix port
-	isZabbixPort := false
-	for port := range commonZabbixPorts {
-		if fmt.Sprintf(":%d", port) == remoteAddr[len(remoteAddr)-5:] {
-			isZabbixPort = true
-			break
+	// Zabbix version patterns
+	zabbixPatterns := []string{
+		"Zabbix Agent",
+		"zabbix_agentd",
+		"Zabbix agent",
+	}
+
+	for _, pattern := range zabbixPatterns {
+		if strings.Contains(response, pattern) {
+			result.AgentVersion = response
+			result.Evidence = append(result.Evidence, fmt.Sprintf("Zabbix version response: %s", response))
+			return true
 		}
 	}
 
-	if !isZabbixPort {
+	// Version number patterns (e.g., "7.0.0", "6.4.10", "5.0.25")
+	if p.isVersionNumber(response) {
+		result.AgentVersion = response
+		result.Evidence = append(result.Evidence, fmt.Sprintf("Version number response: %s", response))
+		return true
+	}
+
+	return false
+}
+
+// isVersionNumber checks if string looks like a version number
+func (p *ZabbixAgentPlugin) isVersionNumber(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 4 {
 		return false
 	}
 
-	// For Zabbix ports, perform additional validation
-	// Test if the service behaves like a monitoring agent (not web server, SSH, etc.)
+	for _, part := range parts {
+		if _, err := strconv.Atoi(part); err != nil {
+			return false
+		}
+	}
 
-	// Test 1: Doesn't respond to HTTP
-	httpBehavior := p.testPayloadBehavior(conn, []byte("GET / HTTP/1.1\r\n\r\n"), "http_test")
+	return true
+}
 
-	// Test 2: Doesn't respond to SSH
-	sshBehavior := p.testPayloadBehavior(conn, []byte("SSH-2.0-Test\r\n"), "ssh_test")
+// isNumericResponse checks if response is numeric (for uptime, etc.)
+func (p *ZabbixAgentPlugin) isNumericResponse(response string) bool {
+	response = strings.TrimSpace(response)
+	_, err := strconv.ParseFloat(response, 64)
+	return err == nil
+}
 
-	// Test 3: Accepts monitoring-like requests silently
-	monitoringBehavior := p.testPayloadBehavior(conn, []byte("agent.ping\n"), "monitoring_test")
+// isValidHostnameResponse checks if response looks like a hostname
+func (p *ZabbixAgentPlugin) isValidHostnameResponse(response string) bool {
+	response = strings.TrimSpace(response)
 
-	// If it doesn't behave like HTTP/SSH but accepts monitoring requests
-	if httpBehavior != "recognized" && sshBehavior != "recognized" && monitoringBehavior != "rejected" {
-		result.Confidence = 55 // Lower confidence for port-based detection
-		result.BehaviorPattern = fmt.Sprintf("Port %s behavior: not HTTP/SSH, accepts monitoring", remoteAddr[len(remoteAddr)-5:])
-		result.SpecificTests = append(result.SpecificTests,
-			fmt.Sprintf("HTTP: %s, SSH: %s, Monitoring: %s", httpBehavior, sshBehavior, monitoringBehavior))
+	// Basic hostname validation
+	if len(response) < 1 || len(response) > 253 {
+		return false
+	}
+
+	// Should not contain spaces or special characters (basic check)
+	if strings.Contains(response, " ") || strings.Contains(response, "\t") {
+		return false
+	}
+
+	return true
+}
+
+// testZBXDProtocol tests Zabbix ZBXD protocol handling
+func (p *ZabbixAgentPlugin) testZBXDProtocol(conn net.Conn, result *DetectionResult) bool {
+	// Create ZBXD header for "agent.ping"
+	data := "agent.ping"
+	header := make([]byte, 13)
+	copy(header[0:4], "ZBXD")
+	header[4] = 0x01 // Version
+	binary.LittleEndian.PutUint64(header[5:13], uint64(len(data)))
+
+	// Send ZBXD packet
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+
+	_, err := conn.Write(append(header, []byte(data)...))
+	if err != nil {
+		return false
+	}
+
+	// Read response
+	response := make([]byte, 1024)
+	n, err := conn.Read(response)
+	if err != nil {
+		return false
+	}
+
+	// Check for ZBXD response header
+	if n >= 13 && bytes.Equal(response[0:4], []byte("ZBXD")) {
+		result.Evidence = append(result.Evidence, "Valid ZBXD protocol response")
+		result.ProtocolVersion = "ZBXD"
 		return true
 	}
 
 	return false
 }
 
-// testZabbixSpecificPayload tests a Zabbix-specific payload and analyzes the behavior
-func (p *ZabbixAgentPlugin) testZabbixSpecificPayload(conn net.Conn, test struct {
-	name        string
-	payload     []byte
-	description string
-	expectation string
-}) string {
-	// Set timeout for this specific test
+// testZabbixJSONProtocol tests Zabbix JSON protocol (7.0+)
+func (p *ZabbixAgentPlugin) testZabbixJSONProtocol(conn net.Conn, result *DetectionResult) bool {
+	// JSON request for agent.ping
+	jsonRequest := `{"request":"agent.ping","ns":123456789}`
+
+	// Create ZBXD header for JSON
+	header := make([]byte, 13)
+	copy(header[0:4], "ZBXD")
+	header[4] = 0x01
+	binary.LittleEndian.PutUint64(header[5:13], uint64(len(jsonRequest)))
+
+	// Send JSON request
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
-	// Send payload
-	_, writeErr := conn.Write(test.payload)
-	if writeErr != nil {
-		return "connection_rejected"
+	_, err := conn.Write(append(header, []byte(jsonRequest)...))
+	if err != nil {
+		return false
 	}
 
-	// Try to read response
+	// Read response
 	response := make([]byte, 1024)
-	n, readErr := conn.Read(response)
+	n, err := conn.Read(response)
+	if err != nil {
+		return false
+	}
 
-	// Analyze the behavior based on the specific test
-	switch test.name {
-	case "zabbix_header":
-		// ZBXD header should be processed by Zabbix (even if silently)
-		if readErr != nil && n == 0 {
-			return "zbxd_processed" // Zabbix processed the header but didn't respond
-		}
-	case "agent_ping", "agent_version", "system_uptime":
-		// Valid Zabbix keys should be recognized (even if access denied)
-		if readErr != nil && n == 0 {
-			return "key_recognized" // Zabbix recognized the key format
-		}
-	case "invalid_zabbix_key":
-		// Invalid but properly formatted Zabbix key
-		if readErr != nil && n == 0 {
-			return "format_recognized" // Zabbix recognized the format
-		}
-	case "malformed_zabbix_header":
-		// Malformed ZBXD should trigger Zabbix error handling
-		if readErr != nil {
-			return "protocol_error_handling" // Zabbix handled protocol error
+	// Check for JSON response
+	if n > 13 {
+		responseData := response[13:n] // Skip ZBXD header
+		if strings.Contains(string(responseData), `"response"`) || strings.Contains(string(responseData), `"data"`) {
+			result.Evidence = append(result.Evidence, "Valid Zabbix JSON protocol response")
+			result.ProtocolVersion = "JSON"
+			return true
 		}
 	}
 
-	return ""
+	return false
 }
 
-// testPayloadBehavior tests a payload and returns behavior classification
-func (p *ZabbixAgentPlugin) testPayloadBehavior(conn net.Conn, payload []byte, testName string) string {
-	// Set timeout for this test
-	conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-
-	// Send payload
-	_, writeErr := conn.Write(payload)
-	if writeErr != nil {
-		return "rejected"
+// determineAgentVariant determines if it's Agent 1 or Agent 2
+func (p *ZabbixAgentPlugin) determineAgentVariant(version string) int {
+	if strings.Contains(version, "Agent 2") || strings.Contains(version, "agent2") {
+		return 2
 	}
-
-	// Try to read response
-	response := make([]byte, 512)
-	n, readErr := conn.Read(response)
-
-	if readErr == nil && n > 0 {
-		return "recognized" // Service responded
-	} else if readErr != nil && n == 0 {
-		return "processed" // Service processed but didn't respond
-	}
-
-	return "ignored"
+	return 1 // Default to Agent 1
 }
 
-// createPreciseVendorInfo creates vendor information for precise detection
-func (p *ZabbixAgentPlugin) createPreciseVendorInfo(result *DetectionResult) struct {
+// createConfirmedVendorInfo creates vendor information for confirmed Zabbix detection
+func (p *ZabbixAgentPlugin) createConfirmedVendorInfo(result *DetectionResult) struct {
 	Name        string
 	Product     string
 	Version     string
@@ -365,6 +425,13 @@ func (p *ZabbixAgentPlugin) createPreciseVendorInfo(result *DetectionResult) str
 	Method      string
 	Description string
 } {
+	product := "Zabbix Agent"
+	if result.AgentVersion != "" {
+		if strings.Contains(result.AgentVersion, "Agent 2") {
+			product = "Zabbix Agent 2"
+		}
+	}
+
 	vendor := struct {
 		Name        string
 		Product     string
@@ -374,39 +441,19 @@ func (p *ZabbixAgentPlugin) createPreciseVendorInfo(result *DetectionResult) str
 		Description string
 	}{
 		Name:        "Zabbix",
-		Product:     "Zabbix Agent (Silent)",
-		Version:     "unknown",
+		Product:     product,
+		Version:     result.AgentVersion,
 		Confidence:  result.Confidence,
 		Method:      result.DetectionMethod,
-		Description: fmt.Sprintf("Silent Zabbix agent detected via %s - likely access-controlled", result.DetectionMethod),
-	}
-
-	// Adjust confidence based on detection method
-	switch result.DetectionMethod {
-	case "Zabbix Protocol Behavior":
-		vendor.Confidence += 10 // Highest confidence for protocol-specific behavior
-	case "Differential Behavior":
-		vendor.Confidence += 5 // Good confidence for differential analysis
-	case "Port-Specific Behavior":
-		vendor.Confidence -= 5 // Lower confidence for port-only detection
-	}
-
-	// Cap confidence for silent detection (can't be 100% sure without responses)
-	if vendor.Confidence > 85 {
-		vendor.Confidence = 85
-	}
-
-	// Minimum confidence
-	if vendor.Confidence < 50 {
-		vendor.Confidence = 50
+		Description: fmt.Sprintf("Confirmed Zabbix agent detected via %s", result.DetectionMethod),
 	}
 
 	return vendor
 }
 
-// PortPriority returns true for common Zabbix ports
+// PortPriority returns true ONLY for standard Zabbix ports
 func (p *ZabbixAgentPlugin) PortPriority(port uint16) bool {
-	_, exists := commonZabbixPorts[int(port)]
+	_, exists := standardZabbixPorts[int(port)]
 	return exists
 }
 
