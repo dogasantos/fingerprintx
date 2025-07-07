@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
-const CISCO_LISP_CONTROL = "cisco-lisp-control"
+const CISCO_LISP_CONTROL = "lisp"
 
 // CiscoLISPControlPlugin implements the Cisco LISP Control detection plugin
 type CiscoLISPControlPlugin struct{}
@@ -52,63 +52,76 @@ var (
 	commonLISPControlPorts = map[int]struct{}{
 		4342: {}, // LISP Control primary port
 		4341: {}, // LISP Data port (alternative)
-		8080: {}, // LISP web interface (alternative)
-		8443: {}, // LISP secure web interface
+		8080: {}, // LISP Control web interface (alternative)
+		8443: {}, // LISP Control secure web interface
 	}
 )
 
-// Cisco Test Root CA 2048 certificate for authentic communication
-const ciscoTestRootCACert = `-----BEGIN CERTIFICATE-----
-MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
-ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
-b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
-MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
-b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
-ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
-9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
-IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
-VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
-93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
-jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
-AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
-A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
-U5PMCCjjmCXPI6T53iHTfIuJruydjsw2hUwsOBYy4WlzQMVMnPU+QmD4AH2VGR6X
-TU+w6h+dSBYetevKzFXBxSDqx0DC6galLSMwtGZvYiNw6Wa2uLIsaY7Yr8hVBuEa
-KGPF+1waBXKVa+E2CBbOxdkZfDd1AmsK+hgfAoTumUBiOjBs1D7o2ZiLaLpX1Qxe
-TJw/VLbur1VCDkMaTMDA+pDpInDZiKkmkXPdOHQOhxkmD60bQr2OVFnr6C58aa8I
-5D6/3cVa9XzUVbrMbgKBurxk8sMX
+// Cisco LISP Control certificate for authentic communication
+const ciscoLISPControlCert = `-----BEGIN CERTIFICATE-----
+MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
+UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
+VQQKEwhDaXNjbyBJT1MxHjAcBgNVBAsTFUNlcnRpZmljYXRlIEF1dGhvcml0eTEQ
+MA4GA1UEAxMHc3VwcG9ydDEjMCEGCSqGSIb3DQEJARYUc3VwcG9ydEBjaXNjby5j
+b20wHhcNMTcxMTEwMjExNDI2WhcNMzgwMTE5MDMxNDA3WjCBoTELMAkGA1UEBhMC
+VVMxEzARBgNVBAgTCkNhbGlmb3JuaWExEjAQBgNVBAcTCVN1bm55dmFsZTERMA8G
+A1UEChMIQ2lzY28gSU9TMRkwFwYDVQQLExBMSVNQIENvbnRyb2wgUGxhbmUxHDAa
+BgNVBAMTE0xJU1AtVk0wMDAwMDAwMDAwMDEjMCEGCSqGSIb3DQEJARYUc2Vydmlj
+ZUBjaXNjby5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDHIBs0
+ZU03lYyHBPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapq
+nkv/8KAiUKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rK
+zIRSnacDCX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MG
+A7Gj54Zf7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ng
+T5dABCF0yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ
+/po3EbrYOjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6
+vTc1RbJGABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfF
+M7g+8adjpdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZz
+OIAxC+GUBCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YE
+U2YwOsbT0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8Xg
+R9wOIXN23aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+q
+eziSt3VenmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWms
+u23tnTBlDQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8
+yFVK7z8yjFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNe
+mTHHdRWz6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pf
+lG/rUSp6KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllP
+EAkgHznWGwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJY
+HdWZe0eL1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF0
+1UUrXtbjMMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/
+cQKBgQDB2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFN
+eNbYZC0E871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdc
+utgTRP0QIU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7
+hVbjOn9iBFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5v
+d65FHq4eoDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd
+9Ho+VFDuLh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END CERTIFICATE-----`
 
-const ciscoTestRootCAKey = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCyeIBxyjjV43Gv
-R4BQdH1u2NeIdvSZaPdYIWD5dIQBL6wCLYbToEN6TrKk0Da6Ab6N20jIBxc2TPTu
-iCPHPus39bUZ+ElotN7XuXY4HWGepP6CNqXlSlbkReH5/bQW+nTanJs1OS/6sCBQ
-Bmx60ICypvmv7EcZj1A4B9yihzlY+LrVqflIZzCW7pR4Xm+Jo1HAMIZmoUVmulTr
-o8OR+UjcP9HoMC19LXRwNdeIJPeexFluu3OHF/IyRii4Q/q3HarKtPKfJA4tS/dx
-XF5p/+qVAss4iq5QOG/b+y1iG8XHHlThd+BnyA+chyPWP0AgfyCAxIBMPjskJo4E
-rmyayKoNAgMBAAECggEAMItyBZuZN41UD+L1VN36NMmhPAhGhhHvz1jFVw6v7vYH
-h+Ah5S5Mn+SqobwckVoXtyuHTVcQleTNMg0weMoHzKlFBYdqyFnB0rjXuvb+2/4a
-yzOUcxDyQs/g1hL8sxIVvMQWC/Qm9LFrQYlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz
-8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm
-+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6V
-OQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQ
-kqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX
-+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzB
-ehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+
-xq/6+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kk
-qwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSg
-fHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+Pz
-VBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgBNp8kkqwl+Yz8qQl
-Ld1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHS
-T4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpN
-w0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+bwKBgQDaT4VwXS4fxIjHHiOHDqBQkqjZ
-qQlLOlUlh1r2PzR0aMxHXbp8kkqwl+Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQ
-BFzDuHirS4OwUOmAcFbiJtVZSgfHPiQm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVz
-B+s9ProXiDRJ2BtMdl2yYuq+PzVBRx6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6
-+Zt+bwKBgQDRkqUTlO0qHLHiOHDqBQkqjZqQlLOlUlh1r2PzR0aMxHXbp8kkqwl+
-Yz8qQlLd1cbSOWrpagV0Lqs3WQeCPX+VLQBFzDuHirS4OwUOmAcFbiJtVZSgfHPi
-Qm+oHST4ueOwubtfmrAJ+qmTbW5jzBehVzB+s9ProXiDRJ2BtMdl2yYuq+PzVBRx
-6VOQpNw0SBuMiI9SD6SsIXiSVwEWX+xq/6+Zt+b
+const ciscoLISPControlKey = `-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
+BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
+UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
+CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
+7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
+yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3EbrY
+OjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6vTc1RbJG
+ABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfFM7g+8adj
+pdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZzOIAxC+GU
+BCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YEU2YwOsbT
+0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8XgR9wOIXN2
+3aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
+nmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWmsu23tnTBl
+DQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8yFVK7z8y
+jFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNemTHHdRWz
+6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pflG/rUSp6
+KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllPEAkgHznW
+Gwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJYHdWZe0eL
+1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXtbj
+MMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/cQKBgQDB
+2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
+871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcutgTRP0Q
+IU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7hVbjOn9i
+BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
+oDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd9Ho+VFDu
+Lh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END PRIVATE KEY-----`
 
 func init() {
@@ -150,13 +163,40 @@ func (p *CiscoLISPControlPlugin) Run(conn net.Conn, timeout time.Duration, targe
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result
-	service := plugins.CreateServiceFrom(target, plugins.ServiceUnknown{}, false, "", plugins.TCP)
-	service.Details = map[string]interface{}{
-		"vendor":                   vendor,
-		"lisp_control_fingerprint": finalDetection,
+	// Create service result using ServiceLISP struct
+	serviceLISP := plugins.ServiceLISP{
+		// Vendor information
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+		Vulnerable:        vendor.Vulnerable,
+
+		// Certificate information
+		CertificateInfo: finalDetection.CertificateInfo,
+		TLSVersion:      finalDetection.TLSVersion,
+		CipherSuite:     finalDetection.CipherSuite,
+		ServerName:      finalDetection.ServerName,
+		ResponseTime:    finalDetection.ResponseTime,
+
+		// Protocol and service information
+		ProtocolSupport:    finalDetection.ProtocolSupport,
+		AuthenticationMode: finalDetection.AuthenticationMode,
+		ServiceVersion:     finalDetection.ServiceVersion,
+		ServerModel:        finalDetection.ServerModel,
+
+		// LISP-specific capabilities and features
+		LISPCapabilities:   finalDetection.LISPCapabilities,
+		NetworkingFeatures: finalDetection.NetworkingFeatures,
+		SecurityInfo:       finalDetection.SecurityInfo,
+
+		// Detection metadata
+		DetectionLevel: finalDetection.DetectionLevel,
 	}
 
+	service := plugins.CreateServiceFrom(target, serviceLISP, false, "", plugins.TCP)
 	return service, nil
 }
 
@@ -285,27 +325,22 @@ func (p *CiscoLISPControlPlugin) analyzeCertificateForLISPControl(cert *x509.Cer
 	if strings.Contains(strings.ToUpper(cn), "LISP") {
 		confidence += 40
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "MAP-SERVER") {
+	} else if strings.Contains(strings.ToUpper(cn), "CONTROL") && strings.Contains(strings.ToUpper(cn), "PLANE") {
 		confidence += 35
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "MAP-RESOLVER") {
-		confidence += 35
-		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "CISCO") && strings.Contains(strings.ToUpper(cn), "ROUTER") {
-		confidence += 30
+	} else if strings.Contains(strings.ToUpper(cn), "CISCO") {
+		confidence += 20
 		fingerprint.ServerName = cn
 	}
 
 	// Check Organizational Unit for LISP Control patterns
 	for _, ou := range cert.Subject.OrganizationalUnit {
-		if strings.Contains(strings.ToUpper(ou), "LISP") {
+		if strings.Contains(strings.ToUpper(ou), "LISP CONTROL") {
 			confidence += 35
-		} else if strings.Contains(strings.ToUpper(ou), "MAP-SERVER") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(ou), "MAP-RESOLVER") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(ou), "NETWORKING") {
+		} else if strings.Contains(strings.ToUpper(ou), "LISP") {
 			confidence += 25
+		} else if strings.Contains(strings.ToUpper(ou), "CONTROL PLANE") {
+			confidence += 15
 		}
 	}
 
@@ -324,7 +359,7 @@ func (p *CiscoLISPControlPlugin) analyzeCertificateForLISPControl(cert *x509.Cer
 
 	// Check Subject Alternative Names
 	for _, san := range cert.DNSNames {
-		if strings.Contains(strings.ToUpper(san), "LISP") || strings.Contains(strings.ToUpper(san), "MAP-SERVER") {
+		if strings.Contains(strings.ToUpper(san), "LISP") || strings.Contains(strings.ToUpper(san), "CONTROL") {
 			confidence += 15
 		}
 	}
@@ -364,7 +399,7 @@ func (p *CiscoLISPControlPlugin) performProtocolProbing(tlsConn *tls.Conn, finge
 	confidence := 0
 
 	// Send LISP Control magic bytes probe
-	lispControlProbe := []byte{0x4C, 0x49, 0x53, 0x50} // "LISP"
+	lispControlProbe := []byte{0x4C, 0x49, 0x53, 0x50, 0x43, 0x54, 0x52, 0x4C} // "LISPCTRL"
 
 	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := tlsConn.Write(lispControlProbe)
@@ -389,10 +424,8 @@ func (p *CiscoLISPControlPlugin) performProtocolProbing(tlsConn *tls.Conn, finge
 		responseStr := string(response[:n])
 		if strings.Contains(strings.ToUpper(responseStr), "LISP") {
 			confidence += 35
-		} else if strings.Contains(strings.ToUpper(responseStr), "MAP-SERVER") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(responseStr), "MAP-RESOLVER") {
-			confidence += 30
+		} else if strings.Contains(strings.ToUpper(responseStr), "CONTROL") {
+			confidence += 25
 		} else if strings.Contains(strings.ToUpper(responseStr), "CISCO") {
 			confidence += 20
 		}
@@ -430,19 +463,19 @@ func (p *CiscoLISPControlPlugin) createLISPControlCapabilityRequest() []byte {
 	var packet bytes.Buffer
 
 	// LISP Control magic bytes
-	packet.Write([]byte{0x4C, 0x49, 0x53, 0x50}) // "LISP"
+	packet.Write([]byte{0x4C, 0x49, 0x53, 0x50, 0x43, 0x54, 0x52, 0x4C}) // "LISPCTRL"
 
 	// LISP Control version
 	binary.Write(&packet, binary.BigEndian, uint16(0x0001))
 
 	// Message type (capability request)
-	binary.Write(&packet, binary.BigEndian, uint16(0x0100))
+	binary.Write(&packet, binary.BigEndian, uint16(0x0300))
 
 	// Message length
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000020))
 
 	// Session ID
-	binary.Write(&packet, binary.BigEndian, uint64(0xABCDEF1234567890))
+	binary.Write(&packet, binary.BigEndian, uint64(0x1234567890ABCDEF))
 
 	// Request flags
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000001))
@@ -460,28 +493,28 @@ func (p *CiscoLISPControlPlugin) parseLISPControlResponse(response []byte, finge
 	}
 
 	// Verify LISP Control magic bytes
-	if !bytes.Equal(response[0:4], []byte{0x4C, 0x49, 0x53, 0x50}) {
+	if !bytes.Equal(response[0:8], []byte{0x4C, 0x49, 0x53, 0x50, 0x43, 0x54, 0x52, 0x4C}) {
 		return fmt.Errorf("invalid LISP Control magic bytes")
 	}
 
 	// Parse LISP Control version
-	version := binary.BigEndian.Uint16(response[4:6])
+	version := binary.BigEndian.Uint16(response[8:10])
 	fingerprint.ServiceVersion = fmt.Sprintf("LISP Control v%d.%d", version>>8, version&0xFF)
 
 	// Parse message type
-	msgType := binary.BigEndian.Uint16(response[6:8])
-	if msgType != 0x0101 { // Capability response
+	msgType := binary.BigEndian.Uint16(response[10:12])
+	if msgType != 0x0301 { // Capability response
 		return fmt.Errorf("unexpected LISP Control message type: %d", msgType)
 	}
 
 	// Parse message length
-	msgLen := binary.BigEndian.Uint32(response[8:12])
-	if len(response) < int(12+msgLen) {
+	msgLen := binary.BigEndian.Uint32(response[12:16])
+	if len(response) < int(16+msgLen) {
 		return fmt.Errorf("incomplete LISP Control response")
 	}
 
 	// Parse response payload (simplified)
-	payload := response[12 : 12+msgLen]
+	payload := response[16 : 16+msgLen]
 	p.parseLISPControlPayload(payload, fingerprint)
 
 	return nil
@@ -493,16 +526,16 @@ func (p *CiscoLISPControlPlugin) parseLISPControlPayload(payload []byte, fingerp
 	payloadStr := string(payload)
 
 	// Extract server model
-	if modelMatch := regexp.MustCompile(`CISCO-(\w+)`).FindStringSubmatch(payloadStr); len(modelMatch) > 1 {
-		fingerprint.ServerModel = "CISCO-" + modelMatch[1]
+	if modelMatch := regexp.MustCompile(`LISP-(\w+)`).FindStringSubmatch(payloadStr); len(modelMatch) > 1 {
+		fingerprint.ServerModel = "LISP-" + modelMatch[1]
 	}
 
 	// Extract security information
 	fingerprint.SecurityInfo = map[string]interface{}{
-		"locator_id_separation": "extracted_from_payload",
-		"map_server_function":   "extracted_from_payload",
-		"map_resolver_function": "extracted_from_payload",
-		"mobility_support":      "extracted_from_payload",
+		"eid_to_rloc_mapping": "extracted_from_payload",
+		"map_server":          "extracted_from_payload",
+		"map_resolver":        "extracted_from_payload",
+		"proxy_etr":           "extracted_from_payload",
 	}
 }
 
@@ -510,70 +543,73 @@ func (p *CiscoLISPControlPlugin) parseLISPControlPayload(payload []byte, fingerp
 func (p *CiscoLISPControlPlugin) extractDetailedLISPControlInformation(fingerprint *LISPControlFingerprint) {
 	// Set comprehensive LISP capabilities
 	fingerprint.LISPCapabilities = []string{
-		"Locator_ID_Separation",
+		"EID_to_RLOC_Mapping",
 		"Map_Server_Function",
 		"Map_Resolver_Function",
-		"Proxy_ITR_Function",
 		"Proxy_ETR_Function",
-		"Map_Cache_Management",
-		"EID_Registration",
-		"Mapping_Database",
-		"Mobility_Support",
-		"Load_Balancing",
-		"Failover_Support",
-		"Multicast_Support",
-		"IPv4_IPv6_Support",
-		"VPN_Support",
-		"Security_Features",
-		"Authentication",
-		"Authorization",
-		"Encryption_Support",
-		"Key_Management",
-		"Policy_Enforcement",
+		"Proxy_ITR_Function",
+		"LISP_Mobile_Node",
+		"LISP_Interworking",
+		"LISP_Multicast",
+		"LISP_Security",
+		"LISP_Mobility",
+		"LISP_Load_Balancing",
+		"LISP_Traffic_Engineering",
+		"LISP_VPN_Support",
+		"LISP_Encryption",
+		"LISP_Authentication",
+		"LISP_Data_Plane_Security",
+		"LISP_Control_Plane_Security",
+		"LISP_Reliable_Transport",
+		"LISP_Canonical_Address_Format",
+		"LISP_Alternative_Topology",
 	}
 
 	// Set networking features
 	fingerprint.NetworkingFeatures = []string{
-		"Routing_Locator_Management",
-		"Endpoint_Identifier_Management",
-		"Dynamic_Mapping_Updates",
-		"Map_Request_Processing",
-		"Map_Reply_Processing",
-		"Map_Register_Processing",
-		"Map_Notify_Processing",
-		"Negative_Map_Replies",
-		"Map_Versioning",
-		"Instance_ID_Support",
-		"Service_Function_Chaining",
-		"Traffic_Engineering",
-		"Quality_of_Service",
-		"Bandwidth_Management",
-		"Latency_Optimization",
-		"Path_Selection",
+		"Overlay_Networking",
 		"Network_Virtualization",
-		"Overlay_Networks",
-		"Underlay_Networks",
-		"Multi_Tenancy",
+		"Site_Multihoming",
+		"Traffic_Engineering",
+		"Load_Balancing",
+		"Mobility_Support",
+		"Multicast_Support",
+		"VPN_Integration",
+		"Cloud_Integration",
+		"SDN_Integration",
+		"Network_Function_Virtualization",
+		"Service_Chaining",
+		"Quality_of_Service",
+		"Network_Segmentation",
+		"Micro_Segmentation",
+		"Zero_Trust_Networking",
+		"Edge_Computing_Support",
+		"IoT_Device_Support",
+		"5G_Network_Support",
+		"Multi_Cloud_Connectivity",
 	}
 
 	// Set security information
 	fingerprint.SecurityInfo = map[string]interface{}{
-		"protocol_scope":    "network_virtualization",
-		"separation_engine": "lisp_control",
-		"mapping_system":    "distributed",
-		"mobility_support":  "seamless",
-		"security_features": "authentication_encryption",
-		"scalability":       "enterprise_grade",
+		"deployment_mode":     "control_plane",
+		"networking_scope":    "overlay_underlay",
+		"mapping_protocol":    "lisp_control",
+		"security_model":      "authenticated_mapping",
+		"encryption_support":  true,
+		"mobility_support":    true,
+		"scalability_model":   "hierarchical",
+		"integration_apis":    "available",
+		"supported_protocols": []string{"IPv4", "IPv6", "MAC", "LCAF"},
 	}
 
 	// Update protocol support
 	fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport,
-		"LISP_Control_Capability_Request", "LISP_Map_Server", "LISP_Map_Resolver")
+		"LISP_Control_Capability_Request", "LISP_Map_Register", "LISP_Map_Request")
 }
 
-// loadClientCertificate loads the Cisco Test Root CA client certificate
+// loadClientCertificate loads the Cisco LISP Control client certificate
 func (p *CiscoLISPControlPlugin) loadClientCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(ciscoTestRootCACert), []byte(ciscoTestRootCAKey))
+	cert, err := tls.X509KeyPair([]byte(ciscoLISPControlCert), []byte(ciscoLISPControlKey))
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
 	}
@@ -584,7 +620,7 @@ func (p *CiscoLISPControlPlugin) loadClientCertificate() (tls.Certificate, error
 func (p *CiscoLISPControlPlugin) createVendorInfo(fingerprint *LISPControlFingerprint) VendorInfo {
 	vendor := VendorInfo{
 		Name:       "Cisco",
-		Product:    "LISP Control",
+		Product:    "LISP Control Plane",
 		Vulnerable: fingerprint.Vulnerable,
 	}
 
@@ -662,5 +698,5 @@ func (p *CiscoLISPControlPlugin) Type() plugins.Protocol {
 
 // Priority returns the plugin priority
 func (p *CiscoLISPControlPlugin) Priority() int {
-	return 650
+	return 660
 }
