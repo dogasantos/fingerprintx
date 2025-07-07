@@ -482,9 +482,6 @@ func (p *FGFMSDPlugin) createServiceFromFingerprint(target plugins.Target, finge
 
 		// Detection metadata
 		DetectionLevel: fingerprint.DetectionLevel,
-
-		// Working version compatibility
-		String: fingerprint.HumanReadableText,
 	}
 
 	return plugins.CreateServiceFrom(target, serviceFGFMSD, fingerprint.TLSSupported, vendor.Product, plugins.TCP)
