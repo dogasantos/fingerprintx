@@ -87,17 +87,6 @@ func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 	// Create vendor information
 	vendor := p.createVendorInfo(fingerprint)
 
-	// Convert plugins.VSAInfo to VSAInfo for ServiceRADIUS struct
-	vsaInfoList := make([]plugins.VSAInfo, len(fingerprint.VendorSpecificAttributes))
-	for i, vsa := range fingerprint.VendorSpecificAttributes {
-		vsaInfoList[i] = plugins.VSAInfo{
-			VendorID:   vsa.VendorID,
-			VendorName: vsa.VendorName,
-			VendorType: vsa.VendorType,
-			DataLength: len(vsa.Data), // Calculate DataLength from Data
-		}
-	}
-
 	// Create service result using ServiceRADIUS struct with exact field names
 	serviceRADIUS := plugins.ServiceRADIUS{
 		// Vendor information (exact field names from types.go)
@@ -114,7 +103,7 @@ func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 		AttributeTypes: fingerprint.AttributeTypes,
 
 		// Vendor-Specific Attributes (exact field names from types.go)
-		VendorSpecificAttributes: vsaInfoList, // Use converted VSAInfo list
+		VendorSpecificAttributes: fingerprint.VendorSpecificAttributes, // Direct assignment - no conversion needed
 
 		// Protocol information (exact field names from types.go)
 		StandardPorts: []int{1812, 1813},
@@ -286,11 +275,11 @@ func (p *RADIUSPlugin) parseRADIUSResponse(response []byte) (*RADIUSFingerprint,
 			if vendorLength >= 2 && len(attrValue) >= int(vendorLength)+4 {
 				vendorData := attrValue[6 : 4+int(vendorLength)]
 
-				// Create plugins.VSAInfo with Data field
+				// Create plugins.VSAInfo with only the fields that exist
 				vsa := plugins.VSAInfo{
 					VendorID:   vendorID,
 					VendorType: vendorType,
-					Data:       vendorData,
+					DataLength: len(vendorData), // Set DataLength instead of Data
 				}
 
 				if vendorName, exists := vendorIDs[vendorID]; exists {
