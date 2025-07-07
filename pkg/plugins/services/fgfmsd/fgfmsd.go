@@ -50,7 +50,6 @@ var (
 		541:  {}, // Standard port for FortiManager FGFMSD
 		8890: {}, // Alternative management port
 		8013: {}, // Management sync port
-		443:  {}, // HTTPS port (alternative)
 	}
 
 	// FortiManager FGFMSD certificate for authentic communication
