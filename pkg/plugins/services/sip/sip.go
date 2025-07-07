@@ -339,38 +339,13 @@ func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *
 }
 
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// FIXED: Proper target host extraction
-	targetHost := ""
+	// FIXED: Proper target host extraction for netip.AddrPort
+	targetHost := target.Address.Addr().String()
 	targetPort := int(target.Address.Port())
 
-	// Extract host from target.Address
-	if target.Address != nil {
-		if tcpAddr, ok := target.Address.(*net.TCPAddr); ok {
-			targetHost = tcpAddr.IP.String()
-		} else if udpAddr, ok := target.Address.(*net.UDPAddr); ok {
-			targetHost = udpAddr.IP.String()
-		} else {
-			// Fallback: extract from string representation
-			addrStr := target.Address.String()
-			if colonIndex := strings.LastIndex(addrStr, ":"); colonIndex > 0 {
-				targetHost = addrStr[:colonIndex]
-			}
-		}
-	}
-
-	// Fallback: use target.Host if available
+	// Fallback: use target.Host if available and targetHost is empty
 	if targetHost == "" && target.Host != "" {
 		targetHost = target.Host
-	}
-
-	// Final fallback: extract from Address string
-	if targetHost == "" {
-		addrStr := target.Address.String()
-		if colonIndex := strings.LastIndex(addrStr, ":"); colonIndex > 0 {
-			targetHost = addrStr[:colonIndex]
-		} else {
-			targetHost = addrStr
-		}
 	}
 
 	log.Printf("DEBUG: SIP plugin starting for %s:%d", targetHost, targetPort)
