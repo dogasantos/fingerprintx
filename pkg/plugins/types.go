@@ -74,17 +74,18 @@ const (
 	ProtoUnknown    = "unknown"
 
 	// ADDED
-	ProtoCCL    = "ccl"
-	ProtoCLE    = "checkpoint-log-exporter"
-	ProtoEMS    = "ems"
-	ProtoFAZD   = "fazd"
-	ProtoFGFMSD = "fgfmsd"
-	ProtoFGHAS  = "fghas"
-	ProtoFTD    = "ftd"
-	ProtoLISP   = "lisp"
-	ProtoPXGRID = "pxgrid"
-	ProtoRADIUS = "radius"
-	ProtoSIC    = "sic"
+	ProtoCCL         = "ccl"
+	ProtoCLE         = "checkpoint-log-exporter"
+	ProtoEMS         = "ems"
+	ProtoFAZD        = "fazd"
+	ProtoFGFMSD      = "fgfmsd"
+	ProtoFGHAS       = "fghas"
+	ProtoFTD         = "ftd"
+	ProtoLISP        = "lisp"
+	ProtoPXGRID      = "pxgrid"
+	ProtoRADIUS      = "radius"
+	ProtoSIC         = "sic"
+	ProtoZabbixAgent = "zabbix"
 )
 
 // Used as a key for maps to plugins.
@@ -285,6 +286,10 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoSIC:
 		var p ServiceSIC
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoZabbixAgent:
+		var p ServiceZabbixAgent
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 
@@ -1038,6 +1043,55 @@ type ServiceFTD struct {
 	SecurityFeatures   []string               `json:"securityFeatures,omitempty"`
 	NetworkingFeatures []string               `json:"networkingFeatures,omitempty"`
 	NetworkInfo        map[string]interface{} `json:"networkInfo,omitempty"`
+
+	// Detection metadata
+	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
+}
+
+func (e ServiceZabbixAgent) Type() string { return ProtoZabbixAgent }
+
+type ServiceZabbixAgent struct {
+	// Vendor information
+	VendorName        string `json:"vendorName,omitempty"`
+	VendorProduct     string `json:"vendorProduct,omitempty"`
+	VendorVersion     string `json:"vendorVersion,omitempty"`
+	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
+	VendorMethod      string `json:"vendorMethod,omitempty"`
+	VendorDescription string `json:"vendorDescription,omitempty"`
+
+	// Agent information
+	AgentVersion string `json:"agentVersion,omitempty"`
+	AgentVariant int    `json:"agentVariant,omitempty"` // 1 = Zabbix agent, 2 = Zabbix agent 2
+	Hostname     string `json:"hostname,omitempty"`
+	ResponseTime int64  `json:"responseTimeMs,omitempty"`
+
+	// Protocol information
+	ProtocolVersion string   `json:"protocolVersion,omitempty"`
+	SupportedChecks []string `json:"supportedChecks,omitempty"`
+	ActiveChecks    bool     `json:"activeChecks,omitempty"`
+	PassiveChecks   bool     `json:"passiveChecks,omitempty"`
+	ConfigRevision  int      `json:"configRevision,omitempty"`
+	SessionID       string   `json:"sessionID,omitempty"`
+
+	// Capabilities
+	HostMetadata   string   `json:"hostMetadata,omitempty"`
+	HostInterface  string   `json:"hostInterface,omitempty"`
+	ListenIP       string   `json:"listenIP,omitempty"`
+	ListenPort     int      `json:"listenPort,omitempty"`
+	SupportedItems []string `json:"supportedItems,omitempty"`
+	RemoteCommands bool     `json:"remoteCommands,omitempty"`
+
+	// Security features
+	TLSSupport        bool   `json:"tlsSupport,omitempty"`
+	TLSVersion        string `json:"tlsVersion,omitempty"`
+	EncryptionEnabled bool   `json:"encryptionEnabled,omitempty"`
+	PSKSupport        bool   `json:"pskSupport,omitempty"`
+	CertificateAuth   bool   `json:"certificateAuth,omitempty"`
+
+	// System information (if available)
+	OperatingSystem string `json:"operatingSystem,omitempty"`
+	Architecture    string `json:"architecture,omitempty"`
+	KernelVersion   string `json:"kernelVersion,omitempty"`
 
 	// Detection metadata
 	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
