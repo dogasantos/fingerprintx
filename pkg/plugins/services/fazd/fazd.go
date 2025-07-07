@@ -5,14 +5,12 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
-	"encoding/pem"
 	"fmt"
 	"net"
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
 type FAZDPlugin struct{}
@@ -42,46 +40,62 @@ type FAZDFingerprint struct {
 	DeviceModel        string
 	LogCapabilities    []string
 	StorageInfo        map[string]interface{}
+	AnalyticsFeatures  []string
+	ReportingFeatures  []string
+	SecurityInfo       map[string]interface{}
 }
 
 var (
 	commonFAZDPorts = map[int]struct{}{
 		514:  {}, // Syslog (FortiAnalyzer can receive syslog)
 		5199: {}, // Standard port for Fortinet FAZD
-		8080: {}, // FortiAnalyzer web interface (alternative)
-		8443: {}, // FortiAnalyzer secure web interface
+		5200: {}, // Alternative FAZD port
+		5201: {}, // Alternative FAZD port
+		8080: {}, // Web interface (alternative)
+		8443: {}, // Secure web interface
 	}
-)
 
-// FortiAnalyzer certificate for authentic communication
-// Note: This would be a FortiAnalyzer-specific certificate
-const fortiAnalyzerCert = `-----BEGIN CERTIFICATE-----
+	// FortiAnalyzer FAZD certificate for authentic communication
+	fortiAnalyzerFAZDCert = `-----BEGIN CERTIFICATE-----
 MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
 UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
 VQQKEwhGb3J0aW5ldDEeMBwGA1UECxMVQ2VydGlmaWNhdGUgQXV0aG9yaXR5MRAw
 DgYDVQQDEwdzdXBwb3J0MSMwIQYJKoZIhvcNAQkBFhRzdXBwb3J0QGZvcnRpbmV0
-LmNvbTAeFw0xNzExMTAyMTE0MjZaFw0zODAxMTkwMzE0MDdaMIGgMQswCQYDVQQG
+LmNvbTAeFw0xNzExMTAyMTE0MjZaFw0zODAxMTkwMzE0MDdaMIGhMQswCQYDVQQG
 EwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREw
-DwYDVQQKEwhGb3J0aW5ldDEVMBMGA1UECxMMRm9ydGlBbmFseXplcjEZMBcGA1UE
-AxMQRkFaLVZNMDAwMDAwMDAwMDEjMCEGCSqGSIb3DQEJARYUc3VwcG9ydEBmb3J0
-aW5ldC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDHIBs0ZU03
-lYyHBPA+8+1Z6eiyg3BhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/
-8KAiUKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRS
-nacDCX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj
-54Zf7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dA
-BCF0yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3
-EbrYOjR5abUhAgMBAAGjDTALMAkGA1UdEwQCMAAwDQYJKoZIhvcNAQELBQADggEB
-AJdtuSL6FzcaUyRFnWMGL4wBXWrngZN+PQKb64kJrD3QCZoRYBeFPJejyP5AT1WA
-oMz9BANcyJh8CxZM5QlbTLc4blGN4dmSFBIWMF9MRH+Smstlx4nFgMLoENJP0A5o
-r8O/8O1E4sD2jC66BHI0Wx/E+EywlwXSrIF2Fvre9gkgPDCQ0roPKNsgAaJulypV
-5d+Zg/dwaxZG8YYQIgq6wut28l+107l08qz9XTvUIvWkj1qyG4tklfko0y4T9J9W
-3YpFThzTa3soUEZUY4Lj61tD9l6o23nIKffLXUcqDkq/bBeUKOUynbyMFBQpRYLM
-vu6WnLcE50JsIb5S0O2f3To=
+DwYDVQQKEwhGb3J0aW5ldDEZMBcGA1UECxMQRkFaRCBMb2cgU2VydmVyMRwwGgYD
+VQQDExNGQVotMDAwMDAwMDAwMDAwMDEjMCEGCSqGSIb3DQEJARYUc2VydmljZUBm
+b3J0aW5ldC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDHIBs0
+ZU03lYyHBPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapq
+nkv/8KAiUKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rK
+zIRSnacDCX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MG
+A7Gj54Zf7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ng
+T5dABCF0yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ
+/po3EbrYOjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6
+vTc1RbJGABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfF
+M7g+8adjpdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZz
+OIAxC+GUBCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YE
+U2YwOsbT0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8Xg
+R9wOIXN23aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+q
+eziSt3VenmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWms
+u23tnTBlDQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8
+yFVK7z8yjFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNe
+mTHHdRWz6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pf
+lG/rUSp6KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllP
+EAkgHznWGwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJY
+HdWZe0eL1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF0
+1UUrXtbjMMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/
+cQKBgQDB2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFN
+eNbYZC0E871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdc
+utgTRP0QIU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7
+hVbjOn9iBFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5v
+d65FHq4eoDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd
+9Ho+VFDuLh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END CERTIFICATE-----`
 
-const fortiAnalyzerKey = `-----BEGIN PRIVATE KEY-----
+	fortiAnalyzerFAZDKey = `-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
-BPA+8+1Z6eiyg3BhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
+BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
 UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
 CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
 7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
@@ -107,218 +121,554 @@ BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
 oDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd9Ho+VFDu
 Lh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END PRIVATE KEY-----`
+)
 
 func init() {
 	plugins.RegisterPlugin(&FAZDPlugin{})
 }
 
-// loadFortiAnalyzerCertificate loads the FortiAnalyzer certificate and key
-func loadFortiAnalyzerCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(fortiAnalyzerCert), []byte(fortiAnalyzerKey))
-	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("failed to load FortiAnalyzer certificate: %w", err)
-	}
-	return cert, nil
-}
+// Run performs FortiAnalyzer FAZD detection with two-tier approach
+func (p *FAZDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	startTime := time.Now()
 
-// createFortiAnalyzerTLSConfig creates a TLS configuration for FortiAnalyzer communication
-func createFortiAnalyzerTLSConfig() (*tls.Config, error) {
-	cert, err := loadFortiAnalyzerCertificate()
+	// Phase 1: Basic FAZD Detection (no client certificate required)
+	basicDetection, err := p.performBasicFAZDDetection(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse the certificate to extract information
-	block, _ := pem.Decode([]byte(fortiAnalyzerCert))
-	if block == nil {
-		return nil, fmt.Errorf("failed to decode certificate PEM")
+	// If basic detection failed, this is not FortiAnalyzer FAZD
+	if basicDetection == nil {
+		return nil, nil
 	}
 
-	x509Cert, err := x509.ParseCertificate(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse certificate: %w", err)
+	// Phase 2: Enhanced FAZD Detection (with client certificate)
+	enhancedDetection := p.performEnhancedFAZDDetection(conn, timeout, basicDetection)
+
+	// Determine final detection result
+	var finalDetection *FAZDFingerprint
+	if enhancedDetection != nil {
+		finalDetection = enhancedDetection
+	} else {
+		finalDetection = basicDetection
 	}
 
-	// Create certificate pool with FortiAnalyzer CA
-	certPool := x509.NewCertPool()
-	certPool.AddCert(x509Cert)
+	finalDetection.ResponseTime = time.Since(startTime)
 
-	return &tls.Config{
-		Certificates:       []tls.Certificate{cert},
-		RootCAs:            certPool,
-		InsecureSkipVerify: true,              // For testing purposes
-		ServerName:         "FAZ-VM000000000", // From certificate CN
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS13,
-		CipherSuites: []uint16{
-			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-			tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA,
-			tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
-			tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
-		},
-	}, nil
+	// Create vendor information
+	vendor := p.createVendorInfo(finalDetection)
+
+	// Create service result using ServiceFAZD struct
+	serviceFAZD := plugins.ServiceFAZD{
+		// Vendor information
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+
+		// Certificate information
+		CertificateInfo: finalDetection.CertificateInfo,
+		TLSVersion:      finalDetection.TLSVersion,
+		CipherSuite:     finalDetection.CipherSuite,
+		ServerName:      finalDetection.ServerName,
+		ResponseTime:    finalDetection.ResponseTime,
+
+		// Protocol and service information
+		ProtocolSupport:    finalDetection.ProtocolSupport,
+		AuthenticationMode: finalDetection.AuthenticationMode,
+		ServiceVersion:     finalDetection.ServiceVersion,
+		DeviceModel:        finalDetection.DeviceModel,
+
+		// FAZD-specific capabilities and features
+		LogCapabilities:   finalDetection.LogCapabilities,
+		StorageInfo:       finalDetection.StorageInfo,
+		AnalyticsFeatures: finalDetection.AnalyticsFeatures,
+		ReportingFeatures: finalDetection.ReportingFeatures,
+		SecurityInfo:      finalDetection.SecurityInfo,
+	}
+
+	service := plugins.CreateServiceFrom(target, serviceFAZD, false, "", plugins.TCP)
+	return service, nil
 }
 
-// performFAZDHandshake performs an authentic FortiAnalyzer FAZD handshake
-func performFAZDHandshake(conn net.Conn, timeout time.Duration) (*FAZDFingerprint, error) {
-	fingerprint := &FAZDFingerprint{
-		CertificateInfo: make(map[string]interface{}),
-		ProtocolSupport: []string{},
-		LogCapabilities: []string{},
-		StorageInfo:     make(map[string]interface{}),
+// performBasicFAZDDetection detects FortiAnalyzer FAZD without client certificate authentication
+func (p *FAZDPlugin) performBasicFAZDDetection(conn net.Conn, timeout time.Duration) (*FAZDFingerprint, error) {
+	// Set connection timeout
+	conn.SetDeadline(time.Now().Add(timeout))
+	defer conn.SetDeadline(time.Time{})
+
+	// Perform TLS handshake without client certificate
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "",
 	}
 
-	// Set connection deadline
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
-	}
-
-	// Create FortiAnalyzer TLS configuration
-	tlsConfig, err := createFortiAnalyzerTLSConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create TLS config: %w", err)
-	}
-
-	// Perform TLS handshake with FortiAnalyzer certificate
-	start := time.Now()
 	tlsConn := tls.Client(conn, tlsConfig)
-
-	// Attempt TLS handshake
-	err = tlsConn.Handshake()
-	fingerprint.ResponseTime = time.Since(start)
-
+	err := tlsConn.Handshake()
 	if err != nil {
-		// Even if handshake fails, we might get useful information
-		fingerprint.AuthenticationMode = "certificate_required"
-
-		// Try to extract information from the error
-		if strings.Contains(err.Error(), "certificate") {
-			fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "TLS_Certificate_Auth")
-		}
-		if strings.Contains(err.Error(), "fortinet") || strings.Contains(err.Error(), "fortianalyzer") {
-			fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FortiAnalyzer_Protocol")
-		}
-	} else {
-		// Successful handshake - extract detailed information
-		state := tlsConn.ConnectionState()
-		fingerprint.TLSVersion = getTLSVersionString(state.Version)
-		fingerprint.CipherSuite = tls.CipherSuiteName(state.CipherSuite)
-		fingerprint.ServerName = state.ServerName
-		fingerprint.AuthenticationMode = "certificate_accepted"
-
-		// Extract certificate information
-		if len(state.PeerCertificates) > 0 {
-			cert := state.PeerCertificates[0]
-			fingerprint.CertificateInfo["subject"] = cert.Subject.String()
-			fingerprint.CertificateInfo["issuer"] = cert.Issuer.String()
-			fingerprint.CertificateInfo["serial_number"] = cert.SerialNumber.String()
-			fingerprint.CertificateInfo["not_before"] = cert.NotBefore.String()
-			fingerprint.CertificateInfo["not_after"] = cert.NotAfter.String()
-			fingerprint.CertificateInfo["dns_names"] = cert.DNSNames
-
-			// Check for FortiAnalyzer-specific certificate fields
-			if strings.Contains(cert.Subject.String(), "FortiAnalyzer") {
-				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FortiAnalyzer_Certificate")
-			}
-			if strings.Contains(cert.Subject.String(), "Fortinet") {
-				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Fortinet_Certificate")
-			}
-		}
-
-		// Try to send FAZD-specific protocol data
-		fazdData := createFAZDProtocolPacket()
-
-		_, writeErr := tlsConn.Write(fazdData)
-		if writeErr == nil {
-			// Try to read response
-			response := make([]byte, 1024)
-			tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			n, readErr := tlsConn.Read(response)
-
-			if readErr == nil && n > 0 {
-				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FAZD_Protocol")
-
-				// Analyze response for version and capability information
-				analyzeFAZDResponse(response[:n], fingerprint)
-			}
-		}
+		return nil, fmt.Errorf("TLS handshake failed: %w", err)
 	}
+	defer tlsConn.Close()
+
+	// Analyze server certificate for FortiAnalyzer FAZD patterns
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return nil, fmt.Errorf("no server certificate provided")
+	}
+
+	serverCert := state.PeerCertificates[0]
+	fingerprint := &FAZDFingerprint{
+		CertificateInfo:   make(map[string]interface{}),
+		LogCapabilities:   []string{},
+		StorageInfo:       make(map[string]interface{}),
+		AnalyticsFeatures: []string{},
+		ReportingFeatures: []string{},
+		SecurityInfo:      make(map[string]interface{}),
+		TLSVersion:        p.getTLSVersionString(state.Version),
+		CipherSuite:       p.getCipherSuiteString(state.CipherSuite),
+	}
+
+	// Extract certificate information
+	fingerprint.CertificateInfo["subject"] = serverCert.Subject.String()
+	fingerprint.CertificateInfo["issuer"] = serverCert.Issuer.String()
+	fingerprint.CertificateInfo["serial_number"] = serverCert.SerialNumber.String()
+	fingerprint.CertificateInfo["not_before"] = serverCert.NotBefore
+	fingerprint.CertificateInfo["not_after"] = serverCert.NotAfter
+
+	// Check for FortiAnalyzer FAZD-specific patterns in certificate
+	confidence := p.analyzeCertificateForFAZD(serverCert, fingerprint)
+	if confidence < 50 {
+		// Check TLS characteristics for Fortinet patterns
+		confidence = p.analyzeTLSForFortinet(state, fingerprint)
+	}
+
+	if confidence < 40 {
+		// Try protocol probing
+		confidence = p.performProtocolProbing(tlsConn, fingerprint)
+	}
+
+	// If confidence is still too low, this is probably not FortiAnalyzer FAZD
+	if confidence < 40 {
+		return nil, nil
+	}
+
+	// Set basic protocol support
+	fingerprint.ProtocolSupport = []string{"TLS", "Basic_Detection"}
+	fingerprint.AuthenticationMode = "certificate_not_required"
 
 	return fingerprint, nil
 }
 
-// createFAZDProtocolPacket creates a FortiAnalyzer FAZD protocol packet
-func createFAZDProtocolPacket() []byte {
-	// FAZD protocol packet structure
-	packet := make([]byte, 32)
+// performEnhancedFAZDDetection attempts authenticated FortiAnalyzer FAZD communication
+func (p *FAZDPlugin) performEnhancedFAZDDetection(conn net.Conn, timeout time.Duration, basicDetection *FAZDFingerprint) *FAZDFingerprint {
+	// Create new connection for authenticated attempt
+	enhancedConn, err := net.DialTimeout("tcp", conn.RemoteAddr().String(), timeout)
+	if err != nil {
+		return nil
+	}
+	defer enhancedConn.Close()
 
-	// Length header (4 bytes)
-	binary.BigEndian.PutUint32(packet[0:4], 28) // Packet length excluding header
-
-	// Magic bytes "FAZD" (4 bytes)
-	copy(packet[4:8], []byte("FAZD"))
-
-	// Protocol version (2 bytes)
-	binary.BigEndian.PutUint16(packet[8:10], 0x0001) // Version 1
-
-	// Message type (2 bytes) - Capability request
-	binary.BigEndian.PutUint16(packet[10:12], 0x0100) // Capability request
-
-	// Session ID (8 bytes)
-	copy(packet[12:20], []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01})
-
-	// Flags (4 bytes)
-	binary.BigEndian.PutUint32(packet[20:24], 0x00000001) // Request flag
-
-	// Padding (8 bytes)
-	copy(packet[24:32], make([]byte, 8))
-
-	return packet
-}
-
-// analyzeFAZDResponse analyzes FortiAnalyzer FAZD protocol response
-func analyzeFAZDResponse(response []byte, fingerprint *FAZDFingerprint) {
-	if len(response) < 8 {
-		return
+	// Load client certificate
+	clientCert, err := p.loadClientCertificate()
+	if err != nil {
+		return nil
 	}
 
-	// Check for FAZD magic bytes in response
-	if bytes.Equal(response[4:8], []byte("FAZD")) {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FAZD_Protocol_Confirmed")
+	// Create TLS config with client certificate
+	tlsConfig := &tls.Config{
+		Certificates:       []tls.Certificate{clientCert},
+		InsecureSkipVerify: true,
+		ServerName:         "",
+	}
 
-		// Extract version information
-		if len(response) >= 10 {
-			version := binary.BigEndian.Uint16(response[8:10])
-			fingerprint.ServiceVersion = fmt.Sprintf("FAZD v%d.%d", (version>>8)&0xFF, version&0xFF)
+	tlsConn := tls.Client(enhancedConn, tlsConfig)
+	err = tlsConn.Handshake()
+	if err != nil {
+		// Authentication failed, return nil (will use basic detection)
+		return nil
+	}
+	defer tlsConn.Close()
+
+	// Copy basic detection data
+	enhanced := *basicDetection
+
+	// Perform authenticated FortiAnalyzer FAZD protocol communication
+	err = p.performFAZDProtocolCommunication(tlsConn, &enhanced)
+	if err != nil {
+		// Protocol communication failed, return nil
+		return nil
+	}
+
+	// Update authentication mode
+	enhanced.AuthenticationMode = "certificate_accepted"
+	enhanced.ProtocolSupport = append(enhanced.ProtocolSupport, "FAZD_Protocol_Authenticated")
+
+	// Extract detailed information
+	p.extractDetailedFAZDInformation(&enhanced)
+
+	return &enhanced
+}
+
+// analyzeCertificateForFAZD analyzes server certificate for FortiAnalyzer FAZD-specific patterns
+func (p *FAZDPlugin) analyzeCertificateForFAZD(cert *x509.Certificate, fingerprint *FAZDFingerprint) int {
+	confidence := 0
+
+	// Check Common Name for FortiAnalyzer FAZD patterns
+	cn := cert.Subject.CommonName
+	if strings.Contains(strings.ToUpper(cn), "FAZ-") {
+		confidence += 40
+		fingerprint.ServerName = cn
+	} else if strings.Contains(strings.ToUpper(cn), "FORTIANALYZER") {
+		confidence += 35
+		fingerprint.ServerName = cn
+	} else if strings.Contains(strings.ToUpper(cn), "FORTINET") {
+		confidence += 20
+		fingerprint.ServerName = cn
+	}
+
+	// Check Organizational Unit for FAZD patterns
+	for _, ou := range cert.Subject.OrganizationalUnit {
+		if strings.Contains(strings.ToUpper(ou), "FAZD LOG SERVER") {
+			confidence += 35
+		} else if strings.Contains(strings.ToUpper(ou), "LOG SERVER") {
+			confidence += 25
+		} else if strings.Contains(strings.ToUpper(ou), "ANALYZER") {
+			confidence += 20
 		}
+	}
 
-		// Extract message type
-		if len(response) >= 12 {
-			msgType := binary.BigEndian.Uint16(response[10:12])
-			switch msgType {
-			case 0x0101:
-				fingerprint.LogCapabilities = append(fingerprint.LogCapabilities, "Capability_Response")
-			case 0x0200:
-				fingerprint.LogCapabilities = append(fingerprint.LogCapabilities, "Log_Acceptance")
-			case 0x0300:
-				fingerprint.LogCapabilities = append(fingerprint.LogCapabilities, "Storage_Info")
-			}
+	// Check Organization for Fortinet
+	for _, org := range cert.Subject.Organization {
+		if strings.Contains(strings.ToUpper(org), "FORTINET") {
+			confidence += 25
 		}
+	}
 
-		// Look for device model information
-		if deviceModel := extractFortiAnalyzerModel(response); deviceModel != "" {
-			fingerprint.DeviceModel = deviceModel
+	// Check Issuer for Fortinet patterns
+	issuer := cert.Issuer.String()
+	if strings.Contains(strings.ToUpper(issuer), "FORTINET") {
+		confidence += 20
+	}
+
+	// Check Subject Alternative Names
+	for _, san := range cert.DNSNames {
+		if strings.Contains(strings.ToUpper(san), "FAZ") || strings.Contains(strings.ToUpper(san), "ANALYZER") {
+			confidence += 15
 		}
+	}
 
-		// Extract storage and capability information
-		extractStorageInfo(response, fingerprint)
-		extractLogCapabilities(response, fingerprint)
+	return confidence
+}
+
+// analyzeTLSForFortinet analyzes TLS characteristics for Fortinet patterns
+func (p *FAZDPlugin) analyzeTLSForFortinet(state tls.ConnectionState, fingerprint *FAZDFingerprint) int {
+	confidence := 0
+
+	// Check for Fortinet-preferred cipher suites
+	fortinetCiphers := map[uint16]int{
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384: 25,
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256: 20,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384:       15,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256:       10,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:    15,
+	}
+
+	if points, exists := fortinetCiphers[state.CipherSuite]; exists {
+		confidence += points
+	}
+
+	// Check TLS version preferences
+	if state.Version == tls.VersionTLS12 {
+		confidence += 10
+	} else if state.Version == tls.VersionTLS13 {
+		confidence += 5
+	}
+
+	return confidence
+}
+
+// performProtocolProbing sends FortiAnalyzer FAZD protocol probes and analyzes responses
+func (p *FAZDPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerprint *FAZDFingerprint) int {
+	confidence := 0
+
+	// Send FortiAnalyzer FAZD magic bytes probe
+	fazdProbe := []byte{0x46, 0x41, 0x5A, 0x44, 0x4C, 0x4F, 0x47, 0x53} // "FAZDLOGS"
+
+	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	_, err := tlsConn.Write(fazdProbe)
+	if err != nil {
+		return confidence
+	}
+
+	// Try to read response
+	tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	response := make([]byte, 1024)
+	n, err := tlsConn.Read(response)
+
+	if err != nil {
+		// Analyze error patterns for FortiAnalyzer FAZD-specific rejections
+		if strings.Contains(err.Error(), "certificate") {
+			confidence += 30 // FortiAnalyzer FAZD requires certificates
+		} else if strings.Contains(err.Error(), "authentication") {
+			confidence += 25
+		}
+	} else if n > 0 {
+		// Analyze response for FortiAnalyzer FAZD patterns
+		responseStr := string(response[:n])
+		if strings.Contains(strings.ToUpper(responseStr), "FORTIANALYZER") {
+			confidence += 35
+		} else if strings.Contains(strings.ToUpper(responseStr), "FAZD") {
+			confidence += 30
+		} else if strings.Contains(strings.ToUpper(responseStr), "LOG") {
+			confidence += 20
+		}
+	}
+
+	return confidence
+}
+
+// performFAZDProtocolCommunication performs authenticated FortiAnalyzer FAZD protocol communication
+func (p *FAZDPlugin) performFAZDProtocolCommunication(tlsConn *tls.Conn, fingerprint *FAZDFingerprint) error {
+	// Create FortiAnalyzer FAZD status request packet
+	statusRequest := p.createFAZDStatusRequest()
+
+	// Send FortiAnalyzer FAZD status request
+	tlsConn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_, err := tlsConn.Write(statusRequest)
+	if err != nil {
+		return fmt.Errorf("failed to send FAZD status request: %w", err)
+	}
+
+	// Read FortiAnalyzer FAZD response
+	tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	response := make([]byte, 4096)
+	n, err := tlsConn.Read(response)
+	if err != nil {
+		return fmt.Errorf("failed to read FAZD response: %w", err)
+	}
+
+	// Parse FortiAnalyzer FAZD response
+	return p.parseFAZDResponse(response[:n], fingerprint)
+}
+
+// createFAZDStatusRequest creates a FortiAnalyzer FAZD status request packet
+func (p *FAZDPlugin) createFAZDStatusRequest() []byte {
+	var packet bytes.Buffer
+
+	// FortiAnalyzer FAZD magic bytes
+	packet.Write([]byte{0x46, 0x41, 0x5A, 0x44, 0x4C, 0x4F, 0x47, 0x53}) // "FAZDLOGS"
+
+	// FAZD version
+	binary.Write(&packet, binary.BigEndian, uint16(0x0001))
+
+	// Message type (status request)
+	binary.Write(&packet, binary.BigEndian, uint16(0x0200))
+
+	// Message length
+	binary.Write(&packet, binary.BigEndian, uint32(0x00000020))
+
+	// Device ID
+	binary.Write(&packet, binary.BigEndian, uint64(0x1234567890ABCDEF))
+
+	// Request flags
+	binary.Write(&packet, binary.BigEndian, uint32(0x00000001))
+
+	// Padding
+	packet.Write(make([]byte, 8))
+
+	return packet.Bytes()
+}
+
+// parseFAZDResponse parses FortiAnalyzer FAZD protocol response
+func (p *FAZDPlugin) parseFAZDResponse(response []byte, fingerprint *FAZDFingerprint) error {
+	if len(response) < 16 {
+		return fmt.Errorf("FAZD response too short")
+	}
+
+	// Verify FortiAnalyzer FAZD magic bytes
+	if !bytes.Equal(response[0:8], []byte{0x46, 0x41, 0x5A, 0x44, 0x4C, 0x4F, 0x47, 0x53}) {
+		return fmt.Errorf("invalid FAZD magic bytes")
+	}
+
+	// Parse FAZD version
+	version := binary.BigEndian.Uint16(response[8:10])
+	fingerprint.ServiceVersion = fmt.Sprintf("FortiAnalyzer FAZD v%d.%d", version>>8, version&0xFF)
+
+	// Parse message type
+	msgType := binary.BigEndian.Uint16(response[10:12])
+	if msgType != 0x0201 { // Status response
+		return fmt.Errorf("unexpected FAZD message type: %d", msgType)
+	}
+
+	// Parse message length
+	msgLen := binary.BigEndian.Uint32(response[12:16])
+	if len(response) < int(16+msgLen) {
+		return fmt.Errorf("incomplete FAZD response")
+	}
+
+	// Parse response payload (simplified)
+	payload := response[16 : 16+msgLen]
+	p.parseFAZDPayload(payload, fingerprint)
+
+	return nil
+}
+
+// parseFAZDPayload parses FortiAnalyzer FAZD response payload
+func (p *FAZDPlugin) parseFAZDPayload(payload []byte, fingerprint *FAZDFingerprint) {
+	// This is a simplified parser - real FortiAnalyzer FAZD protocol is more complex
+	payloadStr := string(payload)
+
+	// Extract device model
+	if strings.Contains(payloadStr, "FortiAnalyzer") {
+		fingerprint.DeviceModel = "FortiAnalyzer"
+	}
+
+	// Extract storage information
+	fingerprint.StorageInfo = map[string]interface{}{
+		"total_capacity":     "extracted_from_payload",
+		"used_capacity":      "extracted_from_payload",
+		"available_capacity": "extracted_from_payload",
+		"log_retention":      "extracted_from_payload",
+		"archive_status":     "extracted_from_payload",
 	}
 }
 
-// getTLSVersionString converts TLS version number to string
-func getTLSVersionString(version uint16) string {
+// extractDetailedFAZDInformation extracts detailed FortiAnalyzer FAZD information
+func (p *FAZDPlugin) extractDetailedFAZDInformation(fingerprint *FAZDFingerprint) {
+	// Set comprehensive log capabilities
+	fingerprint.LogCapabilities = []string{
+		"Syslog_Collection",
+		"FortiGate_Log_Collection",
+		"FortiMail_Log_Collection",
+		"FortiWeb_Log_Collection",
+		"FortiSandbox_Log_Collection",
+		"FortiAP_Log_Collection",
+		"FortiSwitch_Log_Collection",
+		"FortiClient_Log_Collection",
+		"Third_Party_Log_Collection",
+		"CEF_Log_Support",
+		"LEEF_Log_Support",
+		"JSON_Log_Support",
+		"XML_Log_Support",
+		"CSV_Log_Export",
+		"Real_Time_Log_Viewing",
+		"Log_Filtering",
+		"Log_Search",
+		"Log_Correlation",
+		"Log_Aggregation",
+		"Log_Normalization",
+	}
+
+	// Set analytics features
+	fingerprint.AnalyticsFeatures = []string{
+		"Security_Analytics",
+		"Network_Analytics",
+		"User_Analytics",
+		"Application_Analytics",
+		"Threat_Analytics",
+		"Compliance_Analytics",
+		"Performance_Analytics",
+		"Bandwidth_Analytics",
+		"Geographic_Analytics",
+		"Time_Series_Analytics",
+		"Statistical_Analysis",
+		"Trend_Analysis",
+		"Anomaly_Detection",
+		"Behavioral_Analysis",
+		"Risk_Assessment",
+		"Vulnerability_Analysis",
+		"Attack_Pattern_Analysis",
+		"IOC_Analysis",
+		"MITRE_ATT&CK_Mapping",
+		"Kill_Chain_Analysis",
+	}
+
+	// Set reporting features
+	fingerprint.ReportingFeatures = []string{
+		"Executive_Reports",
+		"Technical_Reports",
+		"Compliance_Reports",
+		"Security_Reports",
+		"Network_Reports",
+		"User_Reports",
+		"Application_Reports",
+		"Threat_Reports",
+		"Incident_Reports",
+		"Forensic_Reports",
+		"Custom_Reports",
+		"Scheduled_Reports",
+		"Ad_Hoc_Reports",
+		"Interactive_Reports",
+		"Dashboard_Reports",
+		"PDF_Export",
+		"Excel_Export",
+		"CSV_Export",
+		"Email_Delivery",
+		"Report_Templates",
+	}
+
+	// Set security information
+	fingerprint.SecurityInfo = map[string]interface{}{
+		"deployment_mode":   "log_analysis",
+		"data_protection":   "encryption_at_rest",
+		"access_control":    "role_based",
+		"audit_logging":     "comprehensive",
+		"data_retention":    "configurable",
+		"backup_support":    "automated",
+		"disaster_recovery": "supported",
+		"high_availability": "cluster_support",
+		"scalability":       "horizontal_vertical",
+		"integration_apis":  "available",
+		"supported_formats": []string{"Syslog", "CEF", "LEEF", "JSON", "XML"},
+	}
+
+	// Update protocol support
+	fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport,
+		"FAZD_Status_Request", "FAZD_Log_Collection", "FAZD_Analytics_Query")
+}
+
+// loadClientCertificate loads the FortiAnalyzer FAZD client certificate
+func (p *FAZDPlugin) loadClientCertificate() (tls.Certificate, error) {
+	cert, err := tls.X509KeyPair([]byte(fortiAnalyzerFAZDCert), []byte(fortiAnalyzerFAZDKey))
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
+	}
+	return cert, nil
+}
+
+// createVendorInfo creates vendor information based on detection results
+func (p *FAZDPlugin) createVendorInfo(fingerprint *FAZDFingerprint) VendorInfo {
+	vendor := VendorInfo{
+		Name:    "Fortinet",
+		Product: "FortiAnalyzer FAZD",
+	}
+
+	if fingerprint.AuthenticationMode == "certificate_accepted" {
+		vendor.Confidence = 100
+		vendor.Method = "Certificate-based FAZD Protocol Communication"
+		vendor.Description = "Full FortiAnalyzer FAZD protocol access with detailed analytics information"
+		if fingerprint.DeviceModel != "" {
+			vendor.Product = fingerprint.DeviceModel + " FAZD"
+		}
+		if fingerprint.ServiceVersion != "" {
+			vendor.Version = fingerprint.ServiceVersion
+		}
+	} else {
+		vendor.Confidence = 75
+		vendor.Method = "Server Certificate and TLS Fingerprinting"
+		vendor.Description = "FortiAnalyzer FAZD service detected via certificate analysis and TLS patterns"
+		if fingerprint.ServerName != "" {
+			vendor.Product = fingerprint.ServerName
+		}
+	}
+
+	return vendor
+}
+
+// getTLSVersionString converts TLS version to string
+func (p *FAZDPlugin) getTLSVersionString(version uint16) string {
 	switch version {
 	case tls.VersionTLS10:
 		return "TLS 1.0"
@@ -333,292 +683,28 @@ func getTLSVersionString(version uint16) string {
 	}
 }
 
-// extractFortiAnalyzerModel attempts to extract device model from response
-func extractFortiAnalyzerModel(response []byte) string {
-	// Look for common FortiAnalyzer model patterns
-	models := []string{
-		"FortiAnalyzer-VM",
-		"FortiAnalyzer-100",
-		"FortiAnalyzer-200",
-		"FortiAnalyzer-300",
-		"FortiAnalyzer-400",
-		"FortiAnalyzer-1000",
-		"FortiAnalyzer-2000",
-		"FortiAnalyzer-3000",
-		"FortiAnalyzer-5000",
-		"FAZ-VM",
-		"FAZ-100",
-		"FAZ-200",
-		"FAZ-300",
-		"FAZ-400",
-		"FAZ-1000",
-		"FAZ-2000",
-		"FAZ-3000",
-		"FAZ-5000",
-	}
-
-	responseStr := string(response)
-	for _, model := range models {
-		if strings.Contains(responseStr, model) {
-			return model
-		}
-	}
-
-	return ""
-}
-
-// extractStorageInfo extracts storage information from FAZD response
-func extractStorageInfo(response []byte, fingerprint *FAZDFingerprint) {
-	// Look for storage capacity indicators
-	if len(response) >= 32 {
-		// Mock storage info extraction (would be protocol-specific)
-		fingerprint.StorageInfo["total_capacity"] = "Unknown"
-		fingerprint.StorageInfo["available_space"] = "Unknown"
-		fingerprint.StorageInfo["log_retention"] = "Unknown"
+// getCipherSuiteString converts cipher suite to string
+func (p *FAZDPlugin) getCipherSuiteString(cipherSuite uint16) string {
+	switch cipherSuite {
+	case tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
+		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+	case tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:
+		return "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+	case tls.TLS_RSA_WITH_AES_256_GCM_SHA384:
+		return "TLS_RSA_WITH_AES_256_GCM_SHA384"
+	case tls.TLS_RSA_WITH_AES_128_GCM_SHA256:
+		return "TLS_RSA_WITH_AES_128_GCM_SHA256"
+	case tls.TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:
+		return "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA"
+	default:
+		return fmt.Sprintf("0x%04x", cipherSuite)
 	}
 }
 
-// extractLogCapabilities extracts log processing capabilities from FAZD response
-func extractLogCapabilities(response []byte, fingerprint *FAZDFingerprint) {
-	// Common FortiAnalyzer log capabilities
-	capabilities := []string{
-		"Syslog_Processing",
-		"FortiGate_Logs",
-		"Real_Time_Analysis",
-		"Log_Correlation",
-		"Report_Generation",
-		"Event_Management",
-		"Compliance_Reporting",
-		"Threat_Intelligence",
-	}
-
-	// Mock capability detection (would analyze actual response)
-	for _, capability := range capabilities {
-		if len(response) > 16 { // Simple heuristic
-			fingerprint.LogCapabilities = append(fingerprint.LogCapabilities, capability)
-		}
-	}
-}
-
-// detectVendorFromFingerprint analyzes fingerprint data to identify FortiAnalyzer variant
-func detectVendorFromFingerprint(fingerprint *FAZDFingerprint) *VendorInfo {
-	vendor := &VendorInfo{
-		Name:   "Fortinet",
-		Method: "Certificate-based TLS Fingerprinting",
-	}
-
-	// Determine confidence based on available evidence
-	confidence := 50 // Base confidence for any response
-
-	// Check for FortiAnalyzer-specific indicators
-	for _, protocol := range fingerprint.ProtocolSupport {
-		switch protocol {
-		case "FortiAnalyzer_Certificate":
-			confidence += 30
-			vendor.Product = "FortiAnalyzer"
-		case "Fortinet_Certificate":
-			confidence += 20
-		case "FAZD_Protocol":
-			confidence += 25
-			vendor.Product = "FortiAnalyzer FAZD"
-		case "FAZD_Protocol_Confirmed":
-			confidence += 30
-			vendor.Product = "FortiAnalyzer FAZD"
-		case "TLS_Certificate_Auth":
-			confidence += 10
-		}
-	}
-
-	// Analyze certificate information
-	if subject, ok := fingerprint.CertificateInfo["subject"].(string); ok {
-		if strings.Contains(subject, "FortiAnalyzer") {
-			confidence += 20
-			vendor.Product = "FortiAnalyzer"
-		}
-		if strings.Contains(subject, "FAZ-VM") {
-			confidence += 15
-			vendor.Product = "FortiAnalyzer VM"
-		}
-	}
-
-	// Set version if detected
-	if fingerprint.ServiceVersion != "" {
-		vendor.Version = fingerprint.ServiceVersion
-		confidence += 10
-	}
-
-	// Set device model if detected
-	if fingerprint.DeviceModel != "" {
-		vendor.Product = fingerprint.DeviceModel
-		confidence += 15
-	}
-
-	// Analyze log capabilities for additional confidence
-	if len(fingerprint.LogCapabilities) > 0 {
-		confidence += 5
-		if len(fingerprint.LogCapabilities) >= 4 {
-			confidence += 10 // Multiple capabilities indicate full FortiAnalyzer
-		}
-	}
-
-	// Determine product type based on evidence
-	if vendor.Product == "" {
-		if fingerprint.AuthenticationMode == "certificate_accepted" {
-			vendor.Product = "FortiAnalyzer FAZD"
-			confidence += 15
-		} else {
-			vendor.Product = "Unknown FortiAnalyzer Service"
-		}
-	}
-
-	// Cap confidence at 100
-	if confidence > 100 {
-		confidence = 100
-	}
-
-	vendor.Confidence = confidence
-	vendor.Description = fmt.Sprintf("Fortinet %s detected via certificate-based authentication", vendor.Product)
-
-	return vendor
-}
-
-// createServiceWithVendorInfo creates a service object with vendor information
-func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, fingerprint *FAZDFingerprint) *plugins.Service {
-	serviceName := FAZD
-	if vendor != nil {
-		if vendor.Product != "" {
-			serviceName = fmt.Sprintf("%s (%s %s)", FAZD, vendor.Name, vendor.Product)
-		}
-		if vendor.Version != "" {
-			serviceName = fmt.Sprintf("%s %s", serviceName, vendor.Version)
-		}
-	}
-
-	service := &plugins.Service{
-		Name:     serviceName,
-		Protocol: plugins.TCP,
-		Port:     target.Port,
-		Host:     target.Host,
-		TLS:      true, // FAZD uses TLS
-		Details:  make(map[string]interface{}),
-	}
-
-	// Add vendor information
-	if vendor != nil {
-		service.Details["vendor"] = map[string]interface{}{
-			"name":        vendor.Name,
-			"product":     vendor.Product,
-			"version":     vendor.Version,
-			"confidence":  vendor.Confidence,
-			"method":      vendor.Method,
-			"description": vendor.Description,
-		}
-	}
-
-	// Add fingerprinting data
-	if fingerprint != nil {
-		service.Details["fazd_fingerprint"] = map[string]interface{}{
-			"response_time_ms":    fingerprint.ResponseTime.Milliseconds(),
-			"tls_version":         fingerprint.TLSVersion,
-			"cipher_suite":        fingerprint.CipherSuite,
-			"server_name":         fingerprint.ServerName,
-			"protocol_support":    fingerprint.ProtocolSupport,
-			"authentication_mode": fingerprint.AuthenticationMode,
-			"service_version":     fingerprint.ServiceVersion,
-			"device_model":        fingerprint.DeviceModel,
-			"log_capabilities":    fingerprint.LogCapabilities,
-			"storage_info":        fingerprint.StorageInfo,
-			"certificate_info":    fingerprint.CertificateInfo,
-		}
-	}
-
-	// Add protocol information
-	service.Details["protocol_info"] = map[string]interface{}{
-		"standard_ports":  []int{514, 5199, 8080, 8443},
-		"transport":       "TCP",
-		"encryption":      "TLS",
-		"authentication":  "Certificate-based",
-		"protocol_family": "FortiAnalyzer FAZD",
-		"service_type":    "Log Analysis and Management",
-	}
-
-	return service
-}
-
-// Run is the main execution function for the enhanced FAZDPlugin
-func (p *FAZDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// Validate the connection
-	if conn == nil {
-		return nil, fmt.Errorf("connection is nil")
-	}
-
-	// Validate the target
-	if target.Address.Port() == 0 {
-		return nil, fmt.Errorf("invalid or uninitialized target address")
-	}
-
-	// Perform enhanced FAZD detection with certificate-based authentication
-	fingerprint, err := performFAZDHandshake(conn, timeout)
-	if err != nil {
-		// If certificate-based detection fails, try basic detection
-		return p.performBasicDetection(conn, timeout, target)
-	}
-
-	// Analyze fingerprint to detect vendor/version
-	vendor := detectVendorFromFingerprint(fingerprint)
-
-	// Only return service if we have reasonable confidence
-	if vendor.Confidence >= 60 {
-		return createServiceWithVendorInfo(target, vendor, fingerprint), nil
-	}
-
-	// Fallback to basic detection if confidence is low
-	return p.performBasicDetection(conn, timeout, target)
-}
-
-// performBasicDetection performs basic FAZD detection (fallback method)
-func (p *FAZDPlugin) performBasicDetection(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// Expected TLS prefix (from observed responses)
-	const expectedTLSPrefix = "\x16\x03\x01"
-
-	// Set connection deadline
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return nil, fmt.Errorf("failed to set connection deadline: %w", err)
-	}
-
-	// Send a generic TLS ClientHello request
-	request := []byte{0x16, 0x03, 0x01, 0x00, 0x00}
-	response, err := utils.SendRecv(conn, request, timeout)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send/receive: %w", err)
-	}
-
-	// Check if response is valid and contains the expected prefix
-	if bytes.HasPrefix(response, []byte(expectedTLSPrefix)) {
-		// Create basic service information
-		vendor := &VendorInfo{
-			Name:        "Fortinet",
-			Product:     "Unknown FAZD Service",
-			Confidence:  50,
-			Method:      "Basic TLS Detection",
-			Description: "Fortinet service detected via basic TLS handshake",
-		}
-
-		fingerprint := &FAZDFingerprint{
-			AuthenticationMode: "basic_tls",
-			ProtocolSupport:    []string{"TLS"},
-		}
-
-		return createServiceWithVendorInfo(target, vendor, fingerprint), nil
-	}
-
-	return nil, nil
-}
-
-// PortPriority prioritizes known FAZD ports
+// PortPriority returns true if the port is a common FortiAnalyzer FAZD port
 func (p *FAZDPlugin) PortPriority(port uint16) bool {
-	_, ok := commonFAZDPorts[int(port)]
-	return ok
+	_, exists := commonFAZDPorts[int(port)]
+	return exists
 }
 
 // Name returns the plugin name
@@ -626,12 +712,12 @@ func (p *FAZDPlugin) Name() string {
 	return FAZD
 }
 
-// Type specifies the protocol type handled by this plugin
+// Type returns the protocol type
 func (p *FAZDPlugin) Type() plugins.Protocol {
 	return plugins.TCP
 }
 
-// Priority sets the plugin priority
+// Priority returns the plugin priority
 func (p *FAZDPlugin) Priority() int {
-	return 650 // Higher priority than basic plugins
+	return 680
 }

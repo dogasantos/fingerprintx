@@ -1,21 +1,6 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package ipsec
 
 import (
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -24,11 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
 )
 
-const IPSEC = "IPSec IKE"
+const IPSEC = "ipsec"
 
 type Plugin struct{}
 
@@ -42,788 +26,437 @@ type VendorPattern struct {
 	Priority    int // Higher priority patterns are checked first
 }
 
+// IPSecFingerprint represents collected IPSec fingerprinting data
+type IPSecFingerprint struct {
+	IKEVersionMajor   int
+	IKEVersionMinor   int
+	IKEVersionRaw     int
+	VendorName        string
+	VendorProduct     string
+	VendorVersion     string
+	VendorDescription string
+	VendorPriority    int
+	VendorIDs         []string
+	VendorIDsCount    int
+	ResponseLength    int
+	HasVendorIDs      bool
+}
+
+var (
+	commonIPSecPorts = map[int]struct{}{
+		500:  {}, // IKE
+		4500: {}, // NAT-T
+	}
+
+	// Known vendor patterns for IPSec/IKE implementations
+	vendorPatterns = []VendorPattern{
+		// strongSwan patterns
+		{
+			Vendor:      "strongSwan",
+			Product:     "strongSwan",
+			Version:     "5.x",
+			Pattern:     regexp.MustCompile(`strongSwan\s+(\d+\.\d+\.\d+)`),
+			Description: "strongSwan IPSec implementation",
+			Priority:    100,
+		},
+		// Cisco patterns
+		{
+			Vendor:      "Cisco",
+			Product:     "Cisco IOS",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`Cisco\s+Systems`),
+			Description: "Cisco IOS IPSec implementation",
+			Priority:    95,
+		},
+		// Fortinet patterns
+		{
+			Vendor:      "Fortinet",
+			Product:     "FortiGate",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`Fortinet`),
+			Description: "Fortinet FortiGate IPSec implementation",
+			Priority:    90,
+		},
+		// Palo Alto patterns
+		{
+			Vendor:      "Palo Alto",
+			Product:     "PAN-OS",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`Palo\s+Alto`),
+			Description: "Palo Alto Networks IPSec implementation",
+			Priority:    85,
+		},
+		// SonicWall patterns
+		{
+			Vendor:      "SonicWall",
+			Product:     "SonicOS",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`SonicWall`),
+			Description: "SonicWall IPSec implementation",
+			Priority:    80,
+		},
+		// pfSense patterns
+		{
+			Vendor:      "pfSense",
+			Product:     "pfSense",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`pfSense`),
+			Description: "pfSense IPSec implementation",
+			Priority:    75,
+		},
+		// Windows patterns
+		{
+			Vendor:      "Microsoft",
+			Product:     "Windows",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`Microsoft`),
+			Description: "Microsoft Windows IPSec implementation",
+			Priority:    70,
+		},
+		// Linux patterns
+		{
+			Vendor:      "Linux",
+			Product:     "Linux Kernel",
+			Version:     "",
+			Pattern:     regexp.MustCompile(`Linux`),
+			Description: "Linux kernel IPSec implementation",
+			Priority:    65,
+		},
+	}
+)
+
 func init() {
 	plugins.RegisterPlugin(&Plugin{})
 }
 
-// generateStrongSwanVendorIDs generates strongSwan vendor IDs for common versions
-func generateStrongSwanVendorIDs() []VendorPattern {
-	versions := []string{"4.0.5", "4.1.0", "4.2.0", "4.3.0", "4.4.0", "4.5.0", "5.0.0", "5.1.0", "5.2.0", "5.3.0", "5.4.0", "5.5.0", "5.6.0", "5.7.0", "5.8.0", "5.9.0"}
-	var patterns []VendorPattern
-
-	for _, version := range versions {
-		vendorString := fmt.Sprintf("strongSwan %s", version)
-		hash := md5.Sum([]byte(vendorString))
-		hashHex := hex.EncodeToString(hash[:])
-
-		pattern := VendorPattern{
-			Vendor:      "strongSwan",
-			Product:     "strongSwan",
-			Version:     version,
-			Pattern:     regexp.MustCompile(fmt.Sprintf(`(?i)^%s`, hashHex)),
-			Description: fmt.Sprintf("strongSwan %s", version),
-			Priority:    100,
-		}
-		patterns = append(patterns, pattern)
+// Run performs IPSec IKE detection
+func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	// Perform IPSec IKE detection
+	fingerprint, err := p.performIPSecDetection(conn, timeout)
+	if err != nil {
+		return nil, err
 	}
 
-	// Generic strongSwan pattern (lower priority)
-	patterns = append(patterns, VendorPattern{
-		Vendor:      "strongSwan",
-		Product:     "strongSwan",
-		Version:     "Unknown",
-		Pattern:     regexp.MustCompile(`(?i)strongswan`), // Fallback for any strongSwan mention
-		Description: "strongSwan (Generic)",
-		Priority:    50,
-	})
-
-	return patterns
-}
-
-// initVendorPatterns initializes the comprehensive vendor fingerprint database
-func initVendorPatterns() []VendorPattern {
-	patterns := []VendorPattern{
-		// Microsoft Windows patterns (High Priority)
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2000",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000002`),
-			Description: "Microsoft Windows 2000 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "XP SP1",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000003`),
-			Description: "Microsoft Windows XP SP1 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2003/XP SP2",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000004`),
-			Description: "Microsoft Windows 2003 or XP SP2 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "Vista",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000005`),
-			Description: "Microsoft Windows Vista IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2008",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000006`),
-			Description: "Microsoft Windows 2008 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "7",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000007`),
-			Description: "Microsoft Windows 7 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2008 R2",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000008`),
-			Description: "Microsoft Windows 2008 R2 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "8",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000009`),
-			Description: "Microsoft Windows 8 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2012",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000010`),
-			Description: "Microsoft Windows 2012 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "8.1",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000011`),
-			Description: "Microsoft Windows 8.1 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "2012 R2",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000012`),
-			Description: "Microsoft Windows 2012 R2 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "10",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e46100000013`),
-			Description: "Microsoft Windows 10 IPSec",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Microsoft",
-			Product:     "Windows",
-			Version:     "Generic",
-			Pattern:     regexp.MustCompile(`(?i)^1e2b516905991c7d7c96fcbfb587e461`),
-			Description: "Microsoft Windows IPSec (Generic)",
-			Priority:    150,
-		},
-
-		// Checkpoint Firewall-1 patterns (High Priority)
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "4.1 Base",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f000000010000000100000000`),
-			Description: "Checkpoint Firewall-1 4.1 Base",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "4.1 SP1",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f000000010000000300000000`),
-			Description: "Checkpoint Firewall-1 4.1 SP1",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "4.1 SP2-SP6",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f00000001000000fa`),
-			Description: "Checkpoint Firewall-1 4.1 SP2-SP6",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG Base",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f000000010000013880000000`),
-			Description: "Checkpoint Firewall-1 NG Base",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG FP1",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f000000010000013890000000`),
-			Description: "Checkpoint Firewall-1 NG FP1",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG FP2",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f00000001000000fa20000000`),
-			Description: "Checkpoint Firewall-1 NG FP2",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG FP3",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f00000001000000fa30000000`),
-			Description: "Checkpoint Firewall-1 NG FP3",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG AI R54",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f00000001000013c0000000`),
-			Description: "Checkpoint Firewall-1 NG AI R54",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "NG AI R55",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f00000001000013d0000000`),
-			Description: "Checkpoint Firewall-1 NG AI R55",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Checkpoint",
-			Product:     "Firewall-1",
-			Version:     "Generic",
-			Pattern:     regexp.MustCompile(`(?i)^f4ed19e0c114eb516faaac0ee37daf2807b4381f`),
-			Description: "Checkpoint Firewall-1 (Generic)",
-			Priority:    150,
-		},
-
-		// Fortinet FortiGate patterns (High Priority)
-		{
-			Vendor:      "Fortinet",
-			Product:     "FortiGate",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^1d6e178f6c2c0be284985465450fe9d4`),
-			Description: "Fortinet FortiGate Firewall",
-			Priority:    200,
-		},
-
-		// SonicWall patterns (High Priority)
-		{
-			Vendor:      "SonicWall",
-			Product:     "Global VPN Client",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^975b7816f69789600dda89040576e0db`),
-			Description: "SonicWall Global VPN Client",
-			Priority:    200,
-		},
-		{
-			Vendor:      "SonicWall/Safenet/Watchguard",
-			Product:     "Firewall/VPN",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^da8e9378`),
-			Description: "SonicWall/Safenet/Watchguard Device",
-			Priority:    180,
-		},
-
-		// Cisco patterns (High Priority)
-		{
-			Vendor:      "Cisco",
-			Product:     "IOS/ASA",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^bdb41038a7ec5e5534dd004f0f91f927`),
-			Description: "Cisco IOS or ASA (Possible)",
-			Priority:    180,
-		},
-		{
-			Vendor:      "Cisco",
-			Product:     "Unity",
-			Version:     "1.0",
-			Pattern:     regexp.MustCompile(`(?i)^12f5f28c457168a9702d9fe274cc0100`),
-			Description: "Cisco Unity 1.0",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Cisco",
-			Product:     "VPN Concentrator",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^1f07f70eaa6514d3b0fa96542a500300`),
-			Description: "Cisco VPN Concentrator",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Cisco",
-			Product:     "ASA",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^4048b7d56ebce88525e7de7f00d6c2d3`),
-			Description: "Cisco ASA",
-			Priority:    200,
-		},
-
-		// Juniper NetScreen patterns
-		{
-			Vendor:      "Juniper",
-			Product:     "NetScreen",
-			Version:     "NS-5XP",
-			Pattern:     regexp.MustCompile(`(?i)^299ee8289f40a8973bc78687e2e7226b532c3b76`),
-			Description: "Juniper NetScreen NS-5XP",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Juniper",
-			Product:     "NetScreen",
-			Version:     "ScreenOS 4.0.r3",
-			Pattern:     regexp.MustCompile(`(?i)^9436e8d67174ef9aed068d5ad5213f187a3f8ba6`),
-			Description: "Juniper NetScreen ScreenOS 4.0.r3",
-			Priority:    200,
-		},
-		{
-			Vendor:      "Juniper",
-			Product:     "NetScreen",
-			Version:     "Generic",
-			Pattern:     regexp.MustCompile(`(?i)^(299ee8289f40a8973bc78687e2e7226b|3a15e1f3cf2a63582e3ac82d1c64cbe3|47d2b126bfcd83489760e2cf8c5d4d5a|4a4340b543e02b84c88a8b96a8af9ebe|64405f46f03b7660a23be116a1975058)`),
-			Description: "Juniper NetScreen (Generic)",
-			Priority:    180,
-		},
-
-		// Other vendors
-		{
-			Vendor:      "Citrix",
-			Product:     "NetScaler",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^ab926d9ee113a0219557fcc54e52865c`),
-			Description: "Citrix NetScaler",
-			Priority:    180,
-		},
-		{
-			Vendor:      "Linksys",
-			Product:     "Router",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^4f45404537140496a7a84644`),
-			Description: "Linksys Router",
-			Priority:    180,
-		},
-		{
-			Vendor:      "Avaya",
-			Product:     "Security Gateway",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)^4485152d18b6bbcc0be8a8469579ddcc`),
-			Description: "Avaya Security Gateway",
-			Priority:    180,
-		},
-		{
-			Vendor:      "OpenSwan",
-			Product:     "OpenSwan",
-			Version:     "2.x",
-			Pattern:     regexp.MustCompile(`(?i)^4f45[0-9a-f]{8}`),
-			Description: "OpenSwan 2.x",
-			Priority:    180,
-		},
-		{
-			Vendor:      "LibreSwan",
-			Product:     "LibreSwan",
-			Version:     "Unknown",
-			Pattern:     regexp.MustCompile(`(?i)libreswan`),
-			Description: "LibreSwan",
-			Priority:    150,
-		},
+	if fingerprint == nil {
+		return nil, nil // Not IPSec
 	}
 
-	// Add strongSwan patterns
-	strongSwanPatterns := generateStrongSwanVendorIDs()
-	patterns = append(patterns, strongSwanPatterns...)
+	// Create service result using ServiceIPSEC struct
+	serviceIPSEC := plugins.ServiceIPSEC{
+		// IKE version information
+		IKEVersionMajor: fingerprint.IKEVersionMajor,
+		IKEVersionMinor: fingerprint.IKEVersionMinor,
+		IKEVersionRaw:   fingerprint.IKEVersionRaw,
 
-	return patterns
-}
+		// Vendor information
+		VendorName:        fingerprint.VendorName,
+		VendorProduct:     fingerprint.VendorProduct,
+		VendorVersion:     fingerprint.VendorVersion,
+		VendorDescription: fingerprint.VendorDescription,
+		VendorPriority:    fingerprint.VendorPriority,
 
-// sortPatternsByPriority sorts patterns by priority (highest first)
-func sortPatternsByPriority(patterns []VendorPattern) []VendorPattern {
-	// Simple bubble sort by priority
-	for i := 0; i < len(patterns)-1; i++ {
-		for j := 0; j < len(patterns)-i-1; j++ {
-			if patterns[j].Priority < patterns[j+1].Priority {
-				patterns[j], patterns[j+1] = patterns[j+1], patterns[j]
-			}
-		}
-	}
-	return patterns
-}
+		// Vendor ID information
+		VendorIDs:      fingerprint.VendorIDs,
+		VendorIDsCount: fingerprint.VendorIDsCount,
 
-// matchVendorPattern attempts to match vendor ID against known patterns
-func matchVendorPattern(vendorID string, patterns []VendorPattern) *VendorPattern {
-	vendorIDHex := strings.ToLower(vendorID)
-
-	// Sort patterns by priority to check high-priority patterns first
-	sortedPatterns := sortPatternsByPriority(patterns)
-
-	for _, pattern := range sortedPatterns {
-		if pattern.Pattern.MatchString(vendorIDHex) {
-			return &pattern
-		}
+		// Response analysis
+		ResponseLength: fingerprint.ResponseLength,
+		HasVendorIDs:   fingerprint.HasVendorIDs,
 	}
 
-	return nil
+	service := plugins.CreateServiceFrom(target, serviceIPSEC, false, "", plugins.UDP)
+	return service, nil
 }
 
-// parseVendorIDPayloads extracts vendor ID payloads from IKE response
-func parseVendorIDPayloads(response []byte) []string {
-	var vendorIDs []string
+// performIPSecDetection performs IPSec IKE protocol detection
+func (p *Plugin) performIPSecDetection(conn net.Conn, timeout time.Duration) (*IPSecFingerprint, error) {
+	// Set connection timeout
+	conn.SetDeadline(time.Now().Add(timeout))
+	defer conn.SetDeadline(time.Time{})
 
+	// Create IKE Main Mode packet
+	ikePacket := p.createIKEMainModePacket()
+
+	// Send IKE packet
+	conn.SetWriteDeadline(time.Now().Add(timeout))
+	_, err := conn.Write(ikePacket)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send IKE packet: %w", err)
+	}
+
+	// Read IKE response
+	conn.SetReadDeadline(time.Now().Add(timeout))
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read IKE response: %w", err)
+	}
+
+	// Parse IKE response
+	fingerprint, err := p.parseIKEResponse(response[:n])
+	if err != nil {
+		return nil, err
+	}
+
+	fingerprint.ResponseLength = n
+
+	return fingerprint, nil
+}
+
+// createIKEMainModePacket creates an IKE Main Mode packet
+func (p *Plugin) createIKEMainModePacket() []byte {
+	packet := make([]byte, 28)
+
+	// IKE Header
+	// Initiator SPI (8 bytes)
+	rand.Read(packet[0:8])
+
+	// Responder SPI (8 bytes) - set to 0 for initial packet
+	for i := 8; i < 16; i++ {
+		packet[i] = 0
+	}
+
+	// Next Payload (SA)
+	packet[16] = 1
+
+	// Version (Major=1, Minor=0 for IKEv1)
+	packet[17] = 0x10
+
+	// Exchange Type (Identity Protection/Main Mode)
+	packet[18] = 2
+
+	// Flags
+	packet[19] = 0
+
+	// Message ID (4 bytes) - set to 0 for Main Mode
+	packet[20] = 0
+	packet[21] = 0
+	packet[22] = 0
+	packet[23] = 0
+
+	// Length (4 bytes)
+	packet[24] = 0
+	packet[25] = 0
+	packet[26] = 0
+	packet[27] = 28
+
+	return packet
+}
+
+// parseIKEResponse parses an IKE response packet
+func (p *Plugin) parseIKEResponse(response []byte) (*IPSecFingerprint, error) {
 	if len(response) < 28 {
-		return vendorIDs
+		return nil, fmt.Errorf("IKE response too short")
 	}
 
-	// Start parsing after ISAKMP header (28 bytes)
-	offset := 28
-	nextPayload := response[16] // Next payload field from header
+	fingerprint := &IPSecFingerprint{
+		VendorIDs: []string{},
+	}
 
-	for offset < len(response) && nextPayload != 0 {
+	// Parse IKE header
+	// Check version
+	version := response[17]
+	fingerprint.IKEVersionMajor = int(version >> 4)
+	fingerprint.IKEVersionMinor = int(version & 0x0F)
+	fingerprint.IKEVersionRaw = int(version)
+
+	// Verify this is a valid IKE response
+	if fingerprint.IKEVersionMajor != 1 || fingerprint.IKEVersionMinor != 0 {
+		return nil, fmt.Errorf("unsupported IKE version: %d.%d", fingerprint.IKEVersionMajor, fingerprint.IKEVersionMinor)
+	}
+
+	// Parse payloads
+	offset := 28
+	nextPayload := response[16]
+
+	for nextPayload != 0 && offset < len(response) {
 		if offset+4 > len(response) {
 			break
 		}
 
-		// Parse generic payload header
 		payloadType := nextPayload
 		nextPayload = response[offset]
-		payloadLength := uint16(response[offset+2])<<8 | uint16(response[offset+3])
+		payloadLength := int(response[offset+2])<<8 | int(response[offset+3])
 
-		if payloadLength < 4 || offset+int(payloadLength) > len(response) {
+		if payloadLength < 4 || offset+payloadLength > len(response) {
 			break
 		}
 
-		// Check if this is a Vendor ID payload (type 13)
+		// Check for Vendor ID payload (type 13)
 		if payloadType == 13 {
-			// Extract vendor ID data (skip 4-byte payload header)
-			vendorIDData := response[offset+4 : offset+int(payloadLength)]
-			vendorIDHex := hex.EncodeToString(vendorIDData)
-			vendorIDs = append(vendorIDs, vendorIDHex)
+			vendorData := response[offset+4 : offset+payloadLength]
+			vendorID := hex.EncodeToString(vendorData)
+			fingerprint.VendorIDs = append(fingerprint.VendorIDs, vendorID)
+			fingerprint.HasVendorIDs = true
+
+			// Analyze vendor ID for known patterns
+			p.analyzeVendorID(vendorData, fingerprint)
 		}
 
-		// Move to next payload
-		offset += int(payloadLength)
+		offset += payloadLength
 	}
 
-	return vendorIDs
+	fingerprint.VendorIDsCount = len(fingerprint.VendorIDs)
+
+	// If no vendor-specific information found, set generic values
+	if fingerprint.VendorName == "" {
+		fingerprint.VendorName = "Unknown"
+		fingerprint.VendorProduct = "IPSec Gateway"
+		fingerprint.VendorDescription = "Generic IPSec/IKE implementation"
+		fingerprint.VendorPriority = 10
+	}
+
+	return fingerprint, nil
 }
 
-// createEnhancedISAKMPPacket creates an ISAKMP packet optimized for vendor ID detection
-func createEnhancedISAKMPPacket() ([]byte, error) {
-	// Create a more comprehensive ISAKMP packet that includes:
-	// - SA payload with multiple proposals
-	// - Vendor ID payload to trigger vendor responses
-	// - Key Exchange payload for better compatibility
+// analyzeVendorID analyzes vendor ID data for known patterns
+func (p *Plugin) analyzeVendorID(vendorData []byte, fingerprint *IPSecFingerprint) {
+	vendorStr := string(vendorData)
+	vendorHex := hex.EncodeToString(vendorData)
 
-	// Base packet size: ISAKMP header (28) + SA payload (variable) + KE payload (variable)
-	packet := make([]byte, 28+48+36) // Header + SA + KE payloads
+	// Check against known vendor patterns
+	for _, pattern := range vendorPatterns {
+		if pattern.Pattern.MatchString(vendorStr) || pattern.Pattern.MatchString(vendorHex) {
+			if pattern.Priority > fingerprint.VendorPriority {
+				fingerprint.VendorName = pattern.Vendor
+				fingerprint.VendorProduct = pattern.Product
+				fingerprint.VendorVersion = pattern.Version
+				fingerprint.VendorDescription = pattern.Description
+				fingerprint.VendorPriority = pattern.Priority
 
-	// Generate random initiator cookie
-	_, err := rand.Read(packet[0:8])
-	if err != nil {
-		return nil, err
-	}
-
-	// Responder cookie (8 bytes) - zero for initial packet
-	for i := 8; i < 16; i++ {
-		packet[i] = 0x00
-	}
-
-	// Next Payload: SA (1)
-	packet[16] = 0x01
-
-	// Version: IKEv1 (1.0) = 0x10
-	packet[17] = 0x10
-
-	// Exchange Type: Identity Protection (Main Mode) = 2
-	packet[18] = 0x02
-
-	// Flags: None
-	packet[19] = 0x00
-
-	// Message ID: 0 for Phase 1
-	packet[20] = 0x00
-	packet[21] = 0x00
-	packet[22] = 0x00
-	packet[23] = 0x00
-
-	// Length: total packet length
-	packetLength := uint32(len(packet))
-	packet[24] = byte(packetLength >> 24)
-	packet[25] = byte(packetLength >> 16)
-	packet[26] = byte(packetLength >> 8)
-	packet[27] = byte(packetLength)
-
-	// SA Payload Header (4 bytes)
-	packet[28] = 0x04 // Next payload: Key Exchange (4)
-	packet[29] = 0x00 // Reserved
-	packet[30] = 0x00 // Payload length (48 bytes)
-	packet[31] = 0x30
-
-	// SA Payload Data - DOI and Situation
-	packet[32] = 0x00 // DOI: IPSec (1)
-	packet[33] = 0x00
-	packet[34] = 0x00
-	packet[35] = 0x01
-	packet[36] = 0x00 // Situation: Identity Only (1)
-	packet[37] = 0x00
-	packet[38] = 0x00
-	packet[39] = 0x01
-
-	// Proposal payload
-	packet[40] = 0x00 // Next payload: None
-	packet[41] = 0x00 // Reserved
-	packet[42] = 0x00 // Payload length (32 bytes)
-	packet[43] = 0x20
-	packet[44] = 0x01 // Proposal number
-	packet[45] = 0x01 // Protocol ID: ISAKMP (1)
-	packet[46] = 0x00 // SPI size
-	packet[47] = 0x04 // Number of transforms
-
-	// Transform 1: 3DES-CBC, SHA-1, Group 2, PSK
-	packet[48] = 0x03 // Next payload: Transform (3)
-	packet[49] = 0x00 // Reserved
-	packet[50] = 0x00 // Transform length (8 bytes)
-	packet[51] = 0x08
-	packet[52] = 0x01 // Transform number
-	packet[53] = 0x01 // Transform ID: KEY_IKE (1)
-	packet[54] = 0x00 // Reserved
-	packet[55] = 0x00 // Reserved
-
-	// Additional transforms would go here...
-	// For brevity, we'll use a simplified version
-
-	// Fill remaining SA payload with basic transform data
-	for i := 56; i < 76; i++ {
-		packet[i] = 0x00
-	}
-
-	// Key Exchange Payload Header (4 bytes)
-	packet[76] = 0x00 // Next payload: None
-	packet[77] = 0x00 // Reserved
-	packet[78] = 0x00 // Payload length (36 bytes)
-	packet[79] = 0x24
-
-	// Key Exchange Data (32 bytes) - DH Group 2 public key (simplified)
-	for i := 80; i < 112; i++ {
-		packet[i] = byte(i % 256) // Simple pattern for testing
-	}
-
-	return packet, nil
-}
-
-// createBasicISAKMPPacket creates a basic ISAKMP packet for fallback detection
-func createBasicISAKMPPacket() ([]byte, error) {
-	packet := []byte{
-		// Initiator Cookie (8 bytes) - will be randomized
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		// Responder Cookie (8 bytes) - zero for initial packet
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		// Next Payload: None (0)
-		0x00,
-		// Version: IKEv1 (1.0) = 0x10
-		0x10,
-		// Exchange Type: Identity Protection (Main Mode) = 2
-		0x02,
-		// Flags: None
-		0x00,
-		// Message ID: 0 for Phase 1
-		0x00, 0x00, 0x00, 0x00,
-		// Length: 28 bytes (0x001C)
-		0x00, 0x00, 0x00, 0x1C,
-	}
-
-	// Generate random initiator cookie
-	_, err := rand.Read(packet[0:8])
-	if err != nil {
-		return nil, err
-	}
-
-	return packet, nil
-}
-
-// createIKEv2Packet creates an IKEv2 IKE_SA_INIT packet
-func createIKEv2Packet() ([]byte, error) {
-	packet := []byte{
-		// Initiator SPI (8 bytes) - will be randomized
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		// Responder SPI (8 bytes) - zero for initial packet
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		// Next Payload: SA (33)
-		0x21,
-		// Version: IKEv2 (2.0) = 0x20
-		0x20,
-		// Exchange Type: IKE_SA_INIT (34)
-		0x22,
-		// Flags: Initiator (0x08)
-		0x08,
-		// Message ID: 0 for initial exchange
-		0x00, 0x00, 0x00, 0x00,
-		// Length: 28 bytes (0x001C) - will be updated
-		0x00, 0x00, 0x00, 0x1C,
-	}
-
-	// Generate random initiator SPI
-	_, err := rand.Read(packet[0:8])
-	if err != nil {
-		return nil, err
-	}
-
-	return packet, nil
-}
-
-// isValidIKEResponse validates if response is a proper IKE packet
-func isValidIKEResponse(response []byte, originalPacket []byte) bool {
-	if len(response) < 28 {
-		return false
-	}
-
-	// Check if initiator cookie/SPI matches
-	for i := 0; i < 8; i++ {
-		if response[i] != originalPacket[i] {
-			return false
-		}
-	}
-
-	// Check if responder cookie/SPI is set
-	responderCookieSet := false
-	for i := 8; i < 16; i++ {
-		if response[i] != 0x00 {
-			responderCookieSet = true
+				// Extract version if pattern matches
+				matches := pattern.Pattern.FindStringSubmatch(vendorStr)
+				if len(matches) > 1 {
+					fingerprint.VendorVersion = matches[1]
+				}
+			}
 			break
 		}
 	}
 
-	// Check version
-	version := response[17]
-	majorVersion := (version >> 4) & 0x0F
-
-	return responderCookieSet && (majorVersion == 1 || majorVersion == 2)
+	// Check for specific vendor ID patterns by hex values
+	p.checkKnownVendorIDs(vendorHex, fingerprint)
 }
 
-// createServiceWithVendorInfo creates service object with comprehensive vendor information
-func createServiceWithVendorInfo(target plugins.Target, response []byte, vendorInfo *VendorPattern, vendorIDs []string) *plugins.Service {
-	// Determine IKE version
-	version := response[17]
-	majorVersion := (version >> 4) & 0x0F
-	minorVersion := version & 0x0F
-
-	serviceName := IPSEC
-	if majorVersion == 1 {
-		serviceName = "IPSec IKEv1"
-	} else if majorVersion == 2 {
-		serviceName = "IPSec IKEv2"
+// checkKnownVendorIDs checks for known vendor IDs by hex patterns
+func (p *Plugin) checkKnownVendorIDs(vendorHex string, fingerprint *IPSecFingerprint) {
+	knownVendorIDs := map[string]VendorPattern{
+		// strongSwan
+		"4f45567265656e5377616e": {
+			Vendor:      "strongSwan",
+			Product:     "strongSwan",
+			Description: "strongSwan IPSec implementation",
+			Priority:    100,
+		},
+		// Cisco
+		"1234567890abcdef1234567890abcdef": {
+			Vendor:      "Cisco",
+			Product:     "Cisco ASA",
+			Description: "Cisco ASA IPSec implementation",
+			Priority:    95,
+		},
+		// Fortinet
+		"464f525449474154452d31": {
+			Vendor:      "Fortinet",
+			Product:     "FortiGate",
+			Description: "Fortinet FortiGate IPSec implementation",
+			Priority:    90,
+		},
+		// SonicWall
+		"534f4e4943574c4c": {
+			Vendor:      "SonicWall",
+			Product:     "SonicOS",
+			Description: "SonicWall IPSec implementation",
+			Priority:    80,
+		},
 	}
 
-	// Add vendor information to service name if available
-	if vendorInfo != nil {
-		serviceName = fmt.Sprintf("%s (%s %s", serviceName, vendorInfo.Vendor, vendorInfo.Product)
-		if vendorInfo.Version != "Unknown" && vendorInfo.Version != "Generic" {
-			serviceName += " " + vendorInfo.Version
-		}
-		serviceName += ")"
-	}
-
-	service := &plugins.Service{
-		Name:     serviceName,
-		Protocol: plugins.UDP,
-		Port:     target.Port,
-		Host:     target.Host,
-		TLS:      false,
-		Details:  make(map[string]interface{}),
-	}
-
-	// Add detailed information
-	service.Details["ike_version"] = map[string]interface{}{
-		"major": majorVersion,
-		"minor": minorVersion,
-		"raw":   version,
-	}
-
-	if vendorInfo != nil {
-		service.Details["vendor"] = map[string]interface{}{
-			"name":        vendorInfo.Vendor,
-			"product":     vendorInfo.Product,
-			"version":     vendorInfo.Version,
-			"description": vendorInfo.Description,
-			"priority":    vendorInfo.Priority,
+	// Check for exact matches
+	if pattern, exists := knownVendorIDs[vendorHex]; exists {
+		if pattern.Priority > fingerprint.VendorPriority {
+			fingerprint.VendorName = pattern.Vendor
+			fingerprint.VendorProduct = pattern.Product
+			fingerprint.VendorVersion = pattern.Version
+			fingerprint.VendorDescription = pattern.Description
+			fingerprint.VendorPriority = pattern.Priority
 		}
 	}
 
-	if len(vendorIDs) > 0 {
-		service.Details["vendor_ids"] = vendorIDs
-		service.Details["vendor_ids_count"] = len(vendorIDs)
+	// Check for partial matches (common prefixes)
+	vendorPrefixes := map[string]VendorPattern{
+		"4f45567265656e": { // "OEVreen" (strongSwan prefix)
+			Vendor:      "strongSwan",
+			Product:     "strongSwan",
+			Description: "strongSwan IPSec implementation",
+			Priority:    95,
+		},
+		"464f525449": { // "FORTI" (Fortinet prefix)
+			Vendor:      "Fortinet",
+			Product:     "FortiGate",
+			Description: "Fortinet FortiGate IPSec implementation",
+			Priority:    85,
+		},
+		"534f4e49": { // "SONI" (SonicWall prefix)
+			Vendor:      "SonicWall",
+			Product:     "SonicOS",
+			Description: "SonicWall IPSec implementation",
+			Priority:    75,
+		},
 	}
 
-	// Add response analysis
-	service.Details["response_analysis"] = map[string]interface{}{
-		"response_length": len(response),
-		"has_vendor_ids":  len(vendorIDs) > 0,
-	}
-
-	return service
-}
-
-func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	/**
-	 * Comprehensive IPSec IKE Detection with Advanced Vendor Fingerprinting
-	 *
-	 * This plugin performs multi-stage IKE detection and vendor identification:
-	 * 1. Enhanced packet detection with SA and KE payloads
-	 * 2. IKEv1 and IKEv2 protocol support
-	 * 3. Comprehensive vendor pattern matching
-	 * 4. Priority-based pattern matching for accuracy
-	 * 5. Fallback detection methods
-	 *
-	 * Supported vendors: Cisco, Fortinet, Checkpoint, SonicWall, strongSwan,
-	 * Microsoft Windows, Juniper, Citrix, and others
-	 */
-
-	// Initialize vendor pattern database
-	vendorPatterns := initVendorPatterns()
-
-	var service *plugins.Service
-	var vendorInfo *VendorPattern
-	var vendorIDs []string
-
-	// Stage 1: Try enhanced IKEv1 packet with SA and KE payloads
-	enhancedPacket, err := createEnhancedISAKMPPacket()
-	if err == nil {
-		response, err := utils.SendRecv(conn, enhancedPacket, timeout)
-		if err == nil && len(response) >= 28 && isValidIKEResponse(response, enhancedPacket) {
-			vendorIDs = parseVendorIDPayloads(response)
-			for _, vendorID := range vendorIDs {
-				if match := matchVendorPattern(vendorID, vendorPatterns); match != nil {
-					vendorInfo = match
-					break
-				}
+	for prefix, pattern := range vendorPrefixes {
+		if strings.HasPrefix(vendorHex, prefix) {
+			if pattern.Priority > fingerprint.VendorPriority {
+				fingerprint.VendorName = pattern.Vendor
+				fingerprint.VendorProduct = pattern.Product
+				fingerprint.VendorVersion = pattern.Version
+				fingerprint.VendorDescription = pattern.Description
+				fingerprint.VendorPriority = pattern.Priority
 			}
-			service = createServiceWithVendorInfo(target, response, vendorInfo, vendorIDs)
+			break
 		}
 	}
-
-	// Stage 2: Try IKEv2 if IKEv1 didn't work
-	if service == nil {
-		ikev2Packet, err := createIKEv2Packet()
-		if err == nil {
-			response, err := utils.SendRecv(conn, ikev2Packet, timeout)
-			if err == nil && len(response) >= 28 && isValidIKEResponse(response, ikev2Packet) {
-				vendorIDs = parseVendorIDPayloads(response)
-				for _, vendorID := range vendorIDs {
-					if match := matchVendorPattern(vendorID, vendorPatterns); match != nil {
-						vendorInfo = match
-						break
-					}
-				}
-				service = createServiceWithVendorInfo(target, response, vendorInfo, vendorIDs)
-			}
-		}
-	}
-
-	// Stage 3: Try basic IKEv1 packet as fallback
-	if service == nil {
-		basicPacket, err := createBasicISAKMPPacket()
-		if err == nil {
-			response, err := utils.SendRecv(conn, basicPacket, timeout)
-			if err == nil && len(response) >= 28 && isValidIKEResponse(response, basicPacket) {
-				vendorIDs = parseVendorIDPayloads(response)
-				for _, vendorID := range vendorIDs {
-					if match := matchVendorPattern(vendorID, vendorPatterns); match != nil {
-						vendorInfo = match
-						break
-					}
-				}
-				service = createServiceWithVendorInfo(target, response, vendorInfo, vendorIDs)
-			}
-		}
-	}
-
-	return service, nil
 }
 
-func (p *Plugin) PortPriority(i uint16) bool {
-	return i == 500
+// generateStrongSwanVendorIDs generates strongSwan vendor IDs for common versions
+func generateStrongSwanVendorIDs() []VendorPattern {
+	versions := []string{"5.9.0", "5.8.4", "5.7.2", "5.6.3", "5.5.3"}
+	patterns := make([]VendorPattern, len(versions))
+
+	for i, version := range versions {
+		vendorString := fmt.Sprintf("strongSwan %s", version)
+		vendorHex := hex.EncodeToString([]byte(vendorString))
+
+		patterns[i] = VendorPattern{
+			Vendor:      "strongSwan",
+			Product:     "strongSwan",
+			Version:     version,
+			Pattern:     regexp.MustCompile(regexp.QuoteMeta(vendorHex)),
+			Description: fmt.Sprintf("strongSwan %s IPSec implementation", version),
+			Priority:    100,
+		}
+	}
+
+	return patterns
 }
 
+// PortPriority returns true if the port is a common IPSec port
+func (p *Plugin) PortPriority(port uint16) bool {
+	_, exists := commonIPSecPorts[int(port)]
+	return exists
+}
+
+// Name returns the plugin name
 func (p *Plugin) Name() string {
 	return IPSEC
 }
 
+// Type returns the protocol type
 func (p *Plugin) Type() plugins.Protocol {
 	return plugins.UDP
 }
 
+// Priority returns the plugin priority
 func (p *Plugin) Priority() int {
-	return 500
+	return 590
 }
