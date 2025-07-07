@@ -43,8 +43,6 @@ Control Message Types:
 - SCCRP (Start-Control-Connection-Reply) = 2
 - SCCCN (Start-Control-Connection-Connected) = 3
 - StopCCN (Stop-Control-Connection-Notification) = 4
-
-
 Layer 2 Tunneling Protocol (L2TP) Detection - Conservative Approach
 
 This plugin performs unauthenticated L2TP protocol fingerprinting by sending
