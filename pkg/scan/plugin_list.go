@@ -42,7 +42,6 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/netbios"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/nfs"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ntp"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/oracledb"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pop3"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/postgresql"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/rdp"
@@ -63,7 +62,9 @@ import (
 
 	//testados:
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/l2tp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/openvpn"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/oracledb"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sip"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
 

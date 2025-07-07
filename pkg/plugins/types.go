@@ -78,6 +78,7 @@ const (
 	ProtoRADIUS      = "radius"
 	ProtoZabbixAgent = "zabbix"
 	ProtoSIP         = "sip"
+	ProtoL2TP        = "l2tp"
 )
 
 // Used as a key for maps to plugins.
@@ -136,6 +137,7 @@ func (e Service) Metadata() Metadata {
 		var p ServiceHTTP
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
+
 	case ProtoSMB:
 		var p ServiceSMB
 		_ = json.Unmarshal(e.Raw, &p)
@@ -240,6 +242,10 @@ func (e Service) Metadata() Metadata {
 
 	//ADDED
 
+	case ProtoL2TP:
+		var p ServiceL2TP
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
 	case ProtoFGFMSD:
 		var p ServiceFGFMSD
 		_ = json.Unmarshal(e.Raw, &p)
@@ -817,4 +823,11 @@ type ServiceSIP struct {
 	SupportedExtensions []string `json:"supportedExtensions,omitempty"`
 	SecurityPolicies    []string `json:"securityPolicies,omitempty"`
 	TransportSecurity   []string `json:"transportSecurity,omitempty"`
+}
+
+func (e ServiceL2TP) Type() string { return ProtoL2TP }
+
+type ServiceL2TP struct {
+	Info    string `json:"info"`
+	Product string `json:"product"`
 }
