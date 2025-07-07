@@ -64,7 +64,6 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/checkpoint-log-exporter"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ems"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fazd"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fghas"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ftd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ipsec"
@@ -72,5 +71,8 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pxgrid"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/radius"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sic"
+
+	//testados:
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
 )

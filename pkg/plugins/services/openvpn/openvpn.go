@@ -43,16 +43,7 @@ type OpenVPNFingerprint struct {
 
 var (
 	commonOpenVPNPorts = map[int]struct{}{
-		1194: {}, // Default OpenVPN port
-		443:  {}, // HTTPS port (common alternative)
-		80:   {}, // HTTP port (alternative)
-		53:   {}, // DNS port (stealth)
-		22:   {}, // SSH port (stealth)
-		25:   {}, // SMTP port (stealth)
-		110:  {}, // POP3 port (stealth)
-		143:  {}, // IMAP port (stealth)
-		993:  {}, // IMAPS port (stealth)
-		995:  {}, // POP3S port (stealth)
+		1194: {}, //  OpenVPN port
 	}
 
 	// Known OpenVPN vendor patterns
