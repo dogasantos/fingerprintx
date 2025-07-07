@@ -3,7 +3,6 @@ package zabbixagent
 import (
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -13,6 +12,16 @@ type ZabbixAgentPlugin struct{}
 
 const ZABBIX_AGENT = "zabbix-agent"
 
+// DetectionResult holds the results of silent Zabbix detection
+type DetectionResult struct {
+	IsZabbix        bool
+	DetectionMethod string
+	Confidence      int
+	ConnectionTime  time.Duration
+	BehaviorPattern string
+	ResponsePattern string
+}
+
 var (
 	// Common Zabbix ports
 	commonZabbixPorts = map[int]struct{}{
@@ -20,24 +29,21 @@ var (
 		10051: {}, // Zabbix Server/Proxy (active)
 	}
 
-	// Simple test payloads
-	simpleTests = []string{
-		"agent.ping",
-		"agent.version",
-		"system.uptime",
-		"invalid.test.key",
-	}
-
-	// Zabbix response indicators
-	zabbixIndicators = []string{
-		"ZBX_NOTSUPPORTED",
-		"NOTSUPPORTED",
-		"Unsupported item key",
-		"Cannot obtain",
-		"Access denied",
-		"Permission denied",
-		"zabbix",
-		"ZBXD",
+	// Test payloads for silent detection
+	testPayloads = [][]byte{
+		[]byte("agent.ping\n"),
+		[]byte("agent.version\n"),
+		[]byte("system.uptime\n"),
+		[]byte("invalid.test.key\n"),
+		[]byte("test\n"),
+		// Zabbix protocol header
+		{0x5A, 0x42, 0x58, 0x44, 0x01, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x65, 0x73, 0x74},
+		// HTTP request (should be rejected differently)
+		[]byte("GET / HTTP/1.1\r\nHost: test\r\n\r\n"),
+		// SSH-like request
+		[]byte("SSH-2.0-Test\r\n"),
+		// Random binary
+		{0x00, 0x01, 0x02, 0x03, 0x04, 0x05},
 	}
 )
 
@@ -45,208 +51,345 @@ func init() {
 	plugins.RegisterPlugin(&ZabbixAgentPlugin{})
 }
 
-// Run performs simple Zabbix Agent detection
+// Run performs silent Zabbix Agent detection based on connection behavior
 func (p *ZabbixAgentPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// Set a reasonable timeout
-	conn.SetDeadline(time.Now().Add(timeout))
-	defer conn.SetDeadline(time.Time{})
+	startTime := time.Now()
 
-	// Try simple detection methods
-	detected, version, method := p.detectZabbix(conn)
+	// Perform silent detection based on connection behavior
+	result, err := p.detectSilentZabbix(conn, timeout)
+	if err != nil {
+		return nil, err
+	}
 
-	if !detected {
+	// If not detected as Zabbix, return nil
+	if !result.IsZabbix {
 		return nil, nil
 	}
 
-	// Create basic service response
+	result.ConnectionTime = time.Since(startTime)
+
+	// Create vendor information for silent detection
+	vendor := p.createSilentVendorInfo(result)
+
+	// Create service using ServiceZabbixAgent struct
 	serviceZabbixAgent := plugins.ServiceZabbixAgent{
-		VendorName:        "Zabbix",
-		VendorProduct:     "Zabbix Agent",
-		VendorVersion:     version,
-		VendorConfidence:  75,
-		VendorMethod:      method,
-		VendorDescription: fmt.Sprintf("Zabbix Agent detected via %s", method),
-		AgentVersion:      version,
-		AgentVariant:      1,
-		ProtocolVersion:   "detected",
-		PassiveChecks:     true,
-		DetectionLevel:    "basic",
+		// Vendor information
+		VendorName:        vendor.Name,
+		VendorProduct:     vendor.Product,
+		VendorVersion:     vendor.Version,
+		VendorConfidence:  vendor.Confidence,
+		VendorMethod:      vendor.Method,
+		VendorDescription: vendor.Description,
+
+		// Agent information (limited for silent detection)
+		AgentVersion:    "unknown (silent)",
+		AgentVariant:    0, // Unknown
+		ResponseTime:    result.ConnectionTime.Milliseconds(),
+		ProtocolVersion: "unknown",
+		PassiveChecks:   true, // Assumed for port 10050
+
+		// Detection metadata
+		DetectionLevel: result.DetectionMethod,
 	}
 
 	service := plugins.CreateServiceFrom(target, serviceZabbixAgent, false, "", plugins.TCP)
 	return service, nil
 }
 
-// detectZabbix performs simple Zabbix detection
-func (p *ZabbixAgentPlugin) detectZabbix(conn net.Conn) (bool, string, string) {
-	// Method 1: Try simple plaintext requests
-	for _, test := range simpleTests {
-		if detected, version := p.tryPlaintext(conn, test); detected {
-			return true, version, fmt.Sprintf("plaintext-%s", test)
-		}
+// detectSilentZabbix performs detection based on connection behavior patterns
+func (p *ZabbixAgentPlugin) detectSilentZabbix(conn net.Conn, timeout time.Duration) (*DetectionResult, error) {
+	result := &DetectionResult{}
+
+	// Set overall timeout
+	deadline := time.Now().Add(timeout)
+	conn.SetDeadline(deadline)
+	defer conn.SetDeadline(time.Time{})
+
+	// Method 1: Connection timing analysis
+	if p.analyzeConnectionTiming(conn, result) {
+		result.IsZabbix = true
+		result.DetectionMethod = "Connection Timing"
+		return result, nil
 	}
 
-	// Method 2: Try connection behavior
-	if p.tryConnectionTest(conn) {
-		return true, "unknown", "connection-behavior"
+	// Method 2: Silent response pattern analysis
+	if p.analyzeSilentResponses(conn, result) {
+		result.IsZabbix = true
+		result.DetectionMethod = "Silent Response Pattern"
+		return result, nil
 	}
 
-	return false, "", ""
+	// Method 3: Port-based heuristic (for known Zabbix ports)
+	if p.analyzePortBehavior(conn, result) {
+		result.IsZabbix = true
+		result.DetectionMethod = "Port Behavior"
+		return result, nil
+	}
+
+	return result, nil
 }
 
-// tryPlaintext tries a simple plaintext request
-func (p *ZabbixAgentPlugin) tryPlaintext(conn net.Conn, test string) (bool, string) {
-	// Send simple request
-	request := test + "\n"
-	_, err := conn.Write([]byte(request))
-	if err != nil {
-		return false, ""
-	}
+// analyzeConnectionTiming analyzes connection timing patterns
+func (p *ZabbixAgentPlugin) analyzeConnectionTiming(conn net.Conn, result *DetectionResult) bool {
+	timings := []time.Duration{}
 
-	// Read response with short timeout
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-	if err != nil {
-		return false, ""
-	}
+	// Send multiple requests and measure timing
+	for i, payload := range testPayloads[:5] { // Test first 5 payloads
+		start := time.Now()
 
-	responseStr := strings.TrimSpace(string(response[:n]))
+		// Set short timeout for each test
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
-	// Check for Zabbix patterns
-	if p.isZabbixResponse(responseStr, test) {
-		version := p.extractVersion(responseStr)
-		return true, version
-	}
-
-	return false, ""
-}
-
-// tryConnectionTest tries basic connection behavior test
-func (p *ZabbixAgentPlugin) tryConnectionTest(conn net.Conn) bool {
-	// Send various test patterns
-	tests := [][]byte{
-		[]byte("test\n"),
-		[]byte("invalid\n"),
-		[]byte{0x00, 0x01, 0x02, 0x03},
-		[]byte("GET /\n"),
-	}
-
-	responses := 0
-	for _, test := range tests {
-		_, err := conn.Write(test)
+		// Send payload
+		_, err := conn.Write(payload)
 		if err != nil {
 			continue
 		}
 
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		response := make([]byte, 512)
+		// Try to read response (expecting none)
+		response := make([]byte, 1024)
 		n, err := conn.Read(response)
+
+		elapsed := time.Since(start)
+		timings = append(timings, elapsed)
+
+		// If we get any response, analyze it
 		if err == nil && n > 0 {
-			responses++
-			responseStr := string(response[:n])
-			if p.containsZabbixIndicators(responseStr) {
-				return true
-			}
+			result.ResponsePattern = fmt.Sprintf("Got %d bytes on test %d", n, i)
+			// If we get responses, this might not be a silent agent
+			return false
 		}
 	}
 
-	// If we got multiple responses, might be Zabbix with restrictive config
-	return responses >= 2
-}
+	// Analyze timing patterns
+	if len(timings) >= 3 {
+		avgTiming := p.calculateAverage(timings)
+		consistency := p.calculateConsistency(timings)
 
-// isZabbixResponse checks if response indicates Zabbix
-func (p *ZabbixAgentPlugin) isZabbixResponse(response, test string) bool {
-	response = strings.TrimSpace(response)
-
-	// Check for Zabbix error patterns first
-	if p.containsZabbixIndicators(response) {
-		return true
-	}
-
-	// Check for valid responses based on test
-	switch test {
-	case "agent.ping":
-		return response == "1"
-	case "agent.version":
-		return p.looksLikeVersion(response) && !strings.Contains(strings.ToUpper(response), "ERROR")
-	case "system.uptime":
-		return p.isNumeric(response)
-	default:
-		// Any reasonable response that's not an error
-		return len(response) > 0 && len(response) < 1000 &&
-			!strings.Contains(strings.ToUpper(response), "ERROR") &&
-			!strings.Contains(strings.ToUpper(response), "INVALID")
-	}
-}
-
-// containsZabbixIndicators checks for Zabbix-specific patterns
-func (p *ZabbixAgentPlugin) containsZabbixIndicators(text string) bool {
-	textUpper := strings.ToUpper(text)
-	for _, indicator := range zabbixIndicators {
-		if strings.Contains(textUpper, strings.ToUpper(indicator)) {
+		// Zabbix agents typically have consistent timing patterns
+		// even when not responding (connection handling, parsing, rejection)
+		if avgTiming > 100*time.Millisecond && avgTiming < 5*time.Second && consistency > 0.7 {
+			result.Confidence = 70
+			result.BehaviorPattern = fmt.Sprintf("Consistent timing: avg=%.2fms, consistency=%.2f",
+				float64(avgTiming.Nanoseconds())/1000000, consistency)
 			return true
 		}
 	}
+
 	return false
 }
 
-// extractVersion tries to extract version from response
-func (p *ZabbixAgentPlugin) extractVersion(response string) string {
-	response = strings.TrimSpace(response)
+// analyzeSilentResponses analyzes patterns in silent responses
+func (p *ZabbixAgentPlugin) analyzeSilentResponses(conn net.Conn, result *DetectionResult) bool {
+	connectionDrops := 0
+	timeouts := 0
+	immediateRejects := 0
 
-	// If it looks like a version, return it
-	if p.looksLikeVersion(response) {
-		return response
-	}
+	for i, payload := range testPayloads {
+		start := time.Now()
 
-	// Look for version patterns in error messages
-	if strings.Contains(strings.ToUpper(response), "ZBX_NOTSUPPORTED") {
-		return "4.0+"
-	}
-	if strings.Contains(strings.ToUpper(response), "NOTSUPPORTED") {
-		return "2.0+"
-	}
+		// Set timeout for this test
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 
-	return "unknown"
-}
-
-// looksLikeVersion checks if string looks like a version
-func (p *ZabbixAgentPlugin) looksLikeVersion(s string) bool {
-	if len(s) < 3 || len(s) > 20 {
-		return false
-	}
-
-	parts := strings.Split(s, ".")
-	if len(parts) < 2 || len(parts) > 4 {
-		return false
-	}
-
-	for _, part := range parts {
-		if len(part) == 0 || len(part) > 3 {
-			return false
+		// Send payload
+		_, writeErr := conn.Write(payload)
+		if writeErr != nil {
+			connectionDrops++
+			continue
 		}
-		for _, r := range part {
-			if r < '0' || r > '9' {
-				return false
+
+		// Try to read response
+		response := make([]byte, 512)
+		n, readErr := conn.Read(response)
+		elapsed := time.Since(start)
+
+		if readErr != nil {
+			if elapsed < 100*time.Millisecond {
+				immediateRejects++
+			} else {
+				timeouts++
 			}
+		} else if n == 0 {
+			timeouts++
 		}
+
+		// Log the behavior for analysis
+		result.ResponsePattern += fmt.Sprintf("Test%d: write=%v, read=%v, time=%dms; ",
+			i, writeErr == nil, n > 0, elapsed.Milliseconds())
 	}
 
-	return true
+	// Analyze response patterns
+	totalTests := len(testPayloads)
+
+	// Pattern 1: Consistent timeouts (typical for PSK-protected agents)
+	if timeouts >= totalTests/2 && connectionDrops == 0 {
+		result.Confidence = 75
+		result.BehaviorPattern = fmt.Sprintf("Consistent timeouts: %d/%d (PSK-protected)", timeouts, totalTests)
+		return true
+	}
+
+	// Pattern 2: Immediate connection drops (access control)
+	if connectionDrops >= totalTests/3 {
+		result.Confidence = 65
+		result.BehaviorPattern = fmt.Sprintf("Connection drops: %d/%d (access control)", connectionDrops, totalTests)
+		return true
+	}
+
+	// Pattern 3: Mixed behavior but consistent pattern
+	if timeouts+connectionDrops >= totalTests*2/3 {
+		result.Confidence = 60
+		result.BehaviorPattern = fmt.Sprintf("Silent behavior: timeouts=%d, drops=%d", timeouts, connectionDrops)
+		return true
+	}
+
+	return false
 }
 
-// isNumeric checks if string is numeric
-func (p *ZabbixAgentPlugin) isNumeric(s string) bool {
-	if len(s) == 0 || len(s) > 20 {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
+// analyzePortBehavior analyzes behavior specific to known Zabbix ports
+func (p *ZabbixAgentPlugin) analyzePortBehavior(conn net.Conn, result *DetectionResult) bool {
+	// Get the target port
+	remoteAddr := conn.RemoteAddr().String()
+
+	// Check if this is a known Zabbix port
+	isZabbixPort := false
+	for port := range commonZabbixPorts {
+		if fmt.Sprintf(":%d", port) == remoteAddr[len(remoteAddr)-5:] {
+			isZabbixPort = true
+			break
 		}
 	}
-	return true
+
+	if !isZabbixPort {
+		return false
+	}
+
+	// For known Zabbix ports, if the connection is accepted but silent,
+	// it's likely a Zabbix agent with strict configuration
+
+	// Test connection stability
+	stable := p.testConnectionStability(conn)
+	if stable {
+		result.Confidence = 55 // Lower confidence for port-based detection
+		result.BehaviorPattern = "Silent on known Zabbix port with stable connection"
+		return true
+	}
+
+	return false
+}
+
+// testConnectionStability tests if the connection remains stable
+func (p *ZabbixAgentPlugin) testConnectionStability(conn net.Conn) bool {
+	// Send small test data and see if connection stays open
+	testData := []byte("test")
+
+	for i := 0; i < 3; i++ {
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		_, err := conn.Write(testData)
+		if err != nil {
+			return false // Connection not stable
+		}
+
+		// Small delay between tests
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return true // Connection remained stable
+}
+
+// calculateAverage calculates average duration
+func (p *ZabbixAgentPlugin) calculateAverage(durations []time.Duration) time.Duration {
+	if len(durations) == 0 {
+		return 0
+	}
+
+	var total time.Duration
+	for _, d := range durations {
+		total += d
+	}
+
+	return total / time.Duration(len(durations))
+}
+
+// calculateConsistency calculates timing consistency (0-1, higher is more consistent)
+func (p *ZabbixAgentPlugin) calculateConsistency(durations []time.Duration) float64 {
+	if len(durations) < 2 {
+		return 0
+	}
+
+	avg := p.calculateAverage(durations)
+	var variance float64
+
+	for _, d := range durations {
+		diff := float64(d - avg)
+		variance += diff * diff
+	}
+
+	variance /= float64(len(durations))
+	stddev := variance // Simplified
+
+	// Consistency is inverse of coefficient of variation
+	if avg == 0 {
+		return 0
+	}
+
+	cv := stddev / float64(avg)
+	consistency := 1.0 / (1.0 + cv)
+
+	if consistency > 1.0 {
+		consistency = 1.0
+	}
+
+	return consistency
+}
+
+// createSilentVendorInfo creates vendor information for silent detection
+func (p *ZabbixAgentPlugin) createSilentVendorInfo(result *DetectionResult) struct {
+	Name        string
+	Product     string
+	Version     string
+	Confidence  int
+	Method      string
+	Description string
+} {
+	vendor := struct {
+		Name        string
+		Product     string
+		Version     string
+		Confidence  int
+		Method      string
+		Description string
+	}{
+		Name:        "Zabbix",
+		Product:     "Zabbix Agent (Silent)",
+		Version:     "unknown",
+		Confidence:  result.Confidence,
+		Method:      result.DetectionMethod,
+		Description: fmt.Sprintf("Silent Zabbix agent detected via %s - likely PSK/access-controlled", result.DetectionMethod),
+	}
+
+	// Adjust confidence based on detection method
+	switch result.DetectionMethod {
+	case "Connection Timing":
+		// Good confidence for timing analysis
+	case "Silent Response Pattern":
+		vendor.Confidence += 5
+	case "Port Behavior":
+		vendor.Confidence -= 10 // Lower confidence for port-only detection
+	}
+
+	// Cap confidence for silent detection (can't be 100% sure without responses)
+	if vendor.Confidence > 80 {
+		vendor.Confidence = 80
+	}
+
+	// Minimum confidence
+	if vendor.Confidence < 50 {
+		vendor.Confidence = 50
+	}
+
+	return vendor
 }
 
 // PortPriority returns true for common Zabbix ports
