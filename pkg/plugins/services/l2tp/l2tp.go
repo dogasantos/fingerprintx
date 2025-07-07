@@ -240,8 +240,8 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 	length := binary.BigEndian.Uint16(response[2:4])
 	tunnelID := binary.BigEndian.Uint16(response[4:6])
 	sessionID := binary.BigEndian.Uint16(response[6:8])
-	ns := binary.BigEndian.Uint16(response[8:10])
-	nr := binary.BigEndian.Uint16(response[10:12])
+	//ns := binary.BigEndian.Uint16(response[8:10])
+	//nr := binary.BigEndian.Uint16(response[10:12])
 
 	version := flags & 0x000F
 	info["L2TP_Version"] = fmt.Sprintf("%d", version)
