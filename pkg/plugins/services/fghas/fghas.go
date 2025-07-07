@@ -13,11 +13,11 @@ import (
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
-type FortiGateHASyncPlugin struct{}
+type FGHASPlugin struct{}
 
-const FORTIGATE_HA_SYNC = "fghas"
+const FGHAS = "fghas"
 
-// VendorInfo represents detected FortiGate HA vendor information
+// VendorInfo represents detected FortiGate HA Sync vendor information
 type VendorInfo struct {
 	Name        string
 	Product     string
@@ -45,80 +45,61 @@ type HASyncFingerprint struct {
 }
 
 var (
-	commonHASyncPorts = map[int]struct{}{
-		703:  {}, // FortiGate HA heartbeat
-		8890: {}, // FortiGate HA sync
-		8891: {}, // FortiGate HA sync (alternative)
-		8892: {}, // FortiGate HA sync (alternative)
-		8893: {}, // FortiGate HA sync (alternative)
+	commonFGHASPorts = map[int]struct{}{
+		703:  {}, // Standard port for FortiGate HA Sync
+		8890: {}, // Alternative HA sync port
+		541:  {}, // Alternative sync port
+		8013: {}, // Management sync port
 	}
 
 	// FortiGate HA Sync certificate for authentic communication
-	fortiGateHASyncCert = `-----BEGIN CERTIFICATE-----
+	fortigateCert = `-----BEGIN CERTIFICATE-----
 MIIDzDCCArSgAwIBAgIDBjE+MA0GCSqGSIb3DQEBCwUAMIGgMQswCQYDVQQGEwJV
 UzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREwDwYD
 VQQKEwhGb3J0aW5ldDEeMBwGA1UECxMVQ2VydGlmaWNhdGUgQXV0aG9yaXR5MRAw
 DgYDVQQDEwdzdXBwb3J0MSMwIQYJKoZIhvcNAQkBFhRzdXBwb3J0QGZvcnRpbmV0
 LmNvbTAeFw0xNzExMTAyMTE0MjZaFw0zODAxMTkwMzE0MDdaMIGhMQswCQYDVQQG
 EwJVUzETMBEGA1UECBMKQ2FsaWZvcm5pYTESMBAGA1UEBxMJU3Vubnl2YWxlMREw
-DwYDVQQKEwhGb3J0aW5ldDEZMBcGA1UECxMQSEEgU3luYyBDbHVzdGVyMRwwGgYD
-VQQDExNGR1QtSEEtMDAwMDAwMDAwMDAxIzAhBgkqhkiG9w0BCQEWFHNlcnZpY2VA
-Zm9ydGluZXQuY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxyAb
-NGVNNJWMhwTwPvPtWenososwYTntUviqzV87G9OsraPu9ZtUwdKw6l/y1oACbnmq
-ap5L//CgIlCre3maarUzoweba+ibpD505tyx+GJ4usgXCn1fVe31gcpB3mo5Hk/K
-ysyEUp2nAwl+aXO5ZZwhR6KWB5w/p6r0ZLnSC7ib7Q0rR3ctOyZbPWMs0LeTvh9j
-BgOxo+eGX+2zFyplatgdQcmEfl6nxgDEToSjYkbrsVc4j8lvGtY8SH7NEuoDtmtZ
-4E+XQAQhdMr5IgElNbR2mfERwbrAFBDEKnyNn5GVoWkqMF1i5wNVMO2Qtpu9606s
-Cf6aNxG62Do0eWm1IQIDAQABo4GBMH8wDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8E
-BAMCBaAwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMB0GA1UdDgQWBBSY
-7eQs7KqJsiWGtjGcKybds3rGVTAfBgNVHSMEGDAWgBSY7eQs7KqJsiWGtjGcKybd
-s3rGVTANBgkqhkiG9w0BAQsFAAOCAQEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfN
-Pne6vTc1RbJGABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2
-bgfFM7g+8adjpdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLP
-DcZzOIAxC+GUBCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVB
-q7YEU2YwOsbT0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxov
-W8XgR9wOIXN23aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4Q==
------END CERTIFICATE-----`
-
-	fortiGateHASyncKey = `-----BEGIN PRIVATE KEY-----
-MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
-BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
-UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
-CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
-7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
-yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3EbrY
-OjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6vTc1RbJG
-ABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfFM7g+8adj
-pdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZzOIAxC+GU
-BCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YEU2YwOsbT
-0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8XgR9wOIXN2
-3aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
-nmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWmsu23tnTBl
-DQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8yFVK7z8y
-jFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNemTHHdRWz
-6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pflG/rUSp6
-KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllPEAkgHznW
-Gwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJYHdWZe0eL
-1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXtbj
-MMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/cQKBgQDB
-2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
-871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcutgTRP0Q
-IU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7hVbjOn9i
-BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
-oDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd9Ho+VFDu
-Lh1BvSCTWFh0WIUxOrNlmlg1Uw==
+DwYDVQQKEwhGb3J0aW5ldDEZMBcGA1UECxMQSEEgU3luYyBTZXJ2aWNlMRwwGgYD
+VQQDExNGRy0wMDAwMDAwMDAwMDAwMDEjMCEGCSqGSIb3DQEJARYUc2VydmljZUBm
+b3J0aW5ldC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDHIBs0
+ZU03lYyHBPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapq
+nkv/8KAiUKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykEeajkeT8rK
+zIRSnacDCX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MG
+A7Gj54Zf7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ng
+T5dABCF0yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ
+/po3EbrYOjR5abUhAgMBAAECggEAcIXaGa+tBN4DfUDzKf/ZflfJ4SaZWLfNPne6
+vTc1RbJGABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfF
+M7g+8adjpdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZz
+OIAxC+GUBCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YE
+U2YwOsbT0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8Xg
+R9wOIXN23aWwmPeAtTnVhvBaHJL7EtGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+q
+eziSt3VenmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWms
+u23tnTBlDQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8
+yFVK7z8yjFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNe
+mTHHdRWz6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pf
+lG/rUSp6KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllP
+EAkgHznWGwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJY
+HdWZe0eL1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF0
+1UUrXrtjMMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/
+cQKBgQDB2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrkkuAQvreuFkrj0IHuZtOQFN
+eNbYZC0E871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcu
+tgTRP0QIU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7
+hVbjOn9iBFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5v
+d65FHq4eoDzQRBEPL86xtNfQvbaIqKTalFDv4ht7DlF38BQx7MAlJQwuljj1hrQd
+9Ho+VFDuLh1BvSCTWFh0WIUxOrNlmlg1Uw==
 -----END PRIVATE KEY-----`
 )
 
 func init() {
-	plugins.RegisterPlugin(&FortiGateHASyncPlugin{})
+	plugins.RegisterPlugin(&FGHASPlugin{})
 }
 
 // Run performs FortiGate HA Sync detection with two-tier approach
-func (p *FortiGateHASyncPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+func (p *FGHASPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	startTime := time.Now()
 
-	// Phase 1: Basic HA Sync Detection (no client certificate required)
+	// Phase 1: Basic HA Sync Detection (certificate analysis)
 	basicDetection, err := p.performBasicHASyncDetection(conn, timeout)
 	if err != nil {
 		return nil, err
@@ -145,9 +126,9 @@ func (p *FortiGateHASyncPlugin) Run(conn net.Conn, timeout time.Duration, target
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result using ServiceFGHAS struct
+	// Create service result using ServiceFGHAS struct with correct field names
 	serviceFGHAS := plugins.ServiceFGHAS{
-		// Vendor information
+		// Vendor information (exact field names from types.go)
 		VendorName:        vendor.Name,
 		VendorProduct:     vendor.Product,
 		VendorVersion:     vendor.Version,
@@ -155,37 +136,41 @@ func (p *FortiGateHASyncPlugin) Run(conn net.Conn, timeout time.Duration, target
 		VendorMethod:      vendor.Method,
 		VendorDescription: vendor.Description,
 
-		// Certificate information
-		CertificateInfo: finalDetection.CertificateInfo,
-		TLSVersion:      finalDetection.TLSVersion,
-		CipherSuite:     finalDetection.CipherSuite,
-		ServerName:      finalDetection.ServerName,
-		ResponseTime:    finalDetection.ResponseTime,
-
-		// Protocol and service information
+		// HA Sync fingerprint data (exact field names from types.go)
+		ResponseTimeMs:     finalDetection.ResponseTime.Milliseconds(), // Convert time.Duration to int64
+		TLSVersion:         finalDetection.TLSVersion,
+		CipherSuite:        finalDetection.CipherSuite,
+		ServerName:         finalDetection.ServerName,
 		ProtocolSupport:    finalDetection.ProtocolSupport,
 		AuthenticationMode: finalDetection.AuthenticationMode,
 		ServiceVersion:     finalDetection.ServiceVersion,
 		ServerModel:        finalDetection.ServerModel,
 
-		// HA-specific capabilities and features
-		HACapabilities: finalDetection.HACapabilities,
-		ClusterInfo:    finalDetection.ClusterInfo,
-		SyncFeatures:   finalDetection.SyncFeatures,
-		NetworkInfo:    finalDetection.NetworkInfo,
+		// HA-specific capabilities and features (exact field names from types.go)
+		HACapabilities:  finalDetection.HACapabilities,
+		ClusterInfo:     finalDetection.ClusterInfo,
+		SyncFeatures:    finalDetection.SyncFeatures,
+		NetworkInfo:     finalDetection.NetworkInfo,
+		CertificateInfo: finalDetection.CertificateInfo,
+
+		// Protocol information (exact field names from types.go)
+		StandardPorts:  []int{703, 8890, 541, 8013},
+		Transport:      "TCP",
+		Encryption:     "TLS",
+		Authentication: finalDetection.AuthenticationMode,
 	}
 
 	service := plugins.CreateServiceFrom(target, serviceFGHAS, false, "", plugins.TCP)
 	return service, nil
 }
 
-// performBasicHASyncDetection detects FortiGate HA Sync without client certificate authentication
-func (p *FortiGateHASyncPlugin) performBasicHASyncDetection(conn net.Conn, timeout time.Duration) (*HASyncFingerprint, error) {
+// performBasicHASyncDetection detects FortiGate HA Sync via certificate analysis
+func (p *FGHASPlugin) performBasicHASyncDetection(conn net.Conn, timeout time.Duration) (*HASyncFingerprint, error) {
 	// Set connection timeout
 	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
 
-	// Perform TLS handshake without client certificate
+	// Perform TLS handshake
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         "",
@@ -208,8 +193,8 @@ func (p *FortiGateHASyncPlugin) performBasicHASyncDetection(conn net.Conn, timeo
 	fingerprint := &HASyncFingerprint{
 		CertificateInfo: make(map[string]interface{}),
 		HACapabilities:  []string{},
-		SyncFeatures:    []string{},
 		ClusterInfo:     make(map[string]interface{}),
+		SyncFeatures:    []string{},
 		NetworkInfo:     make(map[string]interface{}),
 		TLSVersion:      p.getTLSVersionString(state.Version),
 		CipherSuite:     p.getCipherSuiteString(state.CipherSuite),
@@ -241,13 +226,13 @@ func (p *FortiGateHASyncPlugin) performBasicHASyncDetection(conn net.Conn, timeo
 
 	// Set basic protocol support
 	fingerprint.ProtocolSupport = []string{"TLS", "Basic_Detection"}
-	fingerprint.AuthenticationMode = "certificate_not_required"
+	fingerprint.AuthenticationMode = "certificate_based"
 
 	return fingerprint, nil
 }
 
 // performEnhancedHASyncDetection attempts authenticated FortiGate HA Sync communication
-func (p *FortiGateHASyncPlugin) performEnhancedHASyncDetection(conn net.Conn, timeout time.Duration, basicDetection *HASyncFingerprint) *HASyncFingerprint {
+func (p *FGHASPlugin) performEnhancedHASyncDetection(conn net.Conn, timeout time.Duration, basicDetection *HASyncFingerprint) *HASyncFingerprint {
 	// Create new connection for authenticated attempt
 	enhancedConn, err := net.DialTimeout("tcp", conn.RemoteAddr().String(), timeout)
 	if err != nil {
@@ -297,19 +282,19 @@ func (p *FortiGateHASyncPlugin) performEnhancedHASyncDetection(conn net.Conn, ti
 }
 
 // analyzeCertificateForHASync analyzes server certificate for FortiGate HA Sync-specific patterns
-func (p *FortiGateHASyncPlugin) analyzeCertificateForHASync(cert *x509.Certificate, fingerprint *HASyncFingerprint) int {
+func (p *FGHASPlugin) analyzeCertificateForHASync(cert *x509.Certificate, fingerprint *HASyncFingerprint) int {
 	confidence := 0
 
 	// Check Common Name for FortiGate HA patterns
 	cn := cert.Subject.CommonName
-	if strings.Contains(strings.ToUpper(cn), "FGT-HA") {
+	if strings.Contains(strings.ToUpper(cn), "FG-") {
 		confidence += 40
 		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "FORTIGATE") && strings.Contains(strings.ToUpper(cn), "HA") {
+	} else if strings.Contains(strings.ToUpper(cn), "FORTIGATE") {
 		confidence += 35
 		fingerprint.ServerName = cn
 	} else if strings.Contains(strings.ToUpper(cn), "FORTINET") {
-		confidence += 20
+		confidence += 25
 		fingerprint.ServerName = cn
 	}
 
@@ -317,9 +302,9 @@ func (p *FortiGateHASyncPlugin) analyzeCertificateForHASync(cert *x509.Certifica
 	for _, ou := range cert.Subject.OrganizationalUnit {
 		if strings.Contains(strings.ToUpper(ou), "HA SYNC") {
 			confidence += 35
-		} else if strings.Contains(strings.ToUpper(ou), "HA CLUSTER") {
+		} else if strings.Contains(strings.ToUpper(ou), "FORTIGATE") {
 			confidence += 30
-		} else if strings.Contains(strings.ToUpper(ou), "HIGH AVAILABILITY") {
+		} else if strings.Contains(strings.ToUpper(ou), "CLUSTER") {
 			confidence += 25
 		}
 	}
@@ -327,19 +312,19 @@ func (p *FortiGateHASyncPlugin) analyzeCertificateForHASync(cert *x509.Certifica
 	// Check Organization for Fortinet
 	for _, org := range cert.Subject.Organization {
 		if strings.Contains(strings.ToUpper(org), "FORTINET") {
-			confidence += 25
+			confidence += 30
 		}
 	}
 
 	// Check Issuer for Fortinet patterns
 	issuer := cert.Issuer.String()
 	if strings.Contains(strings.ToUpper(issuer), "FORTINET") {
-		confidence += 20
+		confidence += 25
 	}
 
 	// Check Subject Alternative Names
 	for _, san := range cert.DNSNames {
-		if strings.Contains(strings.ToUpper(san), "HA") || strings.Contains(strings.ToUpper(san), "CLUSTER") {
+		if strings.Contains(strings.ToUpper(san), "FG-") || strings.Contains(strings.ToUpper(san), "FORTIGATE") {
 			confidence += 15
 		}
 	}
@@ -348,7 +333,7 @@ func (p *FortiGateHASyncPlugin) analyzeCertificateForHASync(cert *x509.Certifica
 }
 
 // analyzeTLSForFortinet analyzes TLS characteristics for Fortinet patterns
-func (p *FortiGateHASyncPlugin) analyzeTLSForFortinet(state tls.ConnectionState, fingerprint *HASyncFingerprint) int {
+func (p *FGHASPlugin) analyzeTLSForFortinet(state tls.ConnectionState, fingerprint *HASyncFingerprint) int {
 	confidence := 0
 
 	// Check for Fortinet-preferred cipher suites
@@ -366,20 +351,20 @@ func (p *FortiGateHASyncPlugin) analyzeTLSForFortinet(state tls.ConnectionState,
 
 	// Check TLS version preferences
 	if state.Version == tls.VersionTLS12 {
+		confidence += 15
+	} else if state.Version == tls.VersionTLS11 {
 		confidence += 10
-	} else if state.Version == tls.VersionTLS13 {
-		confidence += 5
 	}
 
 	return confidence
 }
 
 // performProtocolProbing sends FortiGate HA Sync protocol probes and analyzes responses
-func (p *FortiGateHASyncPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerprint *HASyncFingerprint) int {
+func (p *FGHASPlugin) performProtocolProbing(tlsConn *tls.Conn, fingerprint *HASyncFingerprint) int {
 	confidence := 0
 
 	// Send FortiGate HA Sync magic bytes probe
-	haSyncProbe := []byte{0x46, 0x47, 0x54, 0x48, 0x41, 0x53, 0x59, 0x4E} // "FGTHASYN"
+	haSyncProbe := []byte{0x46, 0x47, 0x48, 0x41, 0x53, 0x59, 0x4E, 0x43} // "FGHASYNC"
 
 	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	_, err := tlsConn.Write(haSyncProbe)
@@ -393,21 +378,21 @@ func (p *FortiGateHASyncPlugin) performProtocolProbing(tlsConn *tls.Conn, finger
 	n, err := tlsConn.Read(response)
 
 	if err != nil {
-		// Analyze error patterns for FortiGate HA-specific rejections
+		// Analyze error patterns for FortiGate HA Sync-specific rejections
 		if strings.Contains(err.Error(), "certificate") {
-			confidence += 30 // FortiGate HA requires certificates
+			confidence += 30 // FortiGate HA Sync requires certificates
 		} else if strings.Contains(err.Error(), "authentication") {
 			confidence += 25
 		}
 	} else if n > 0 {
-		// Analyze response for FortiGate HA patterns
+		// Analyze response for FortiGate HA Sync patterns
 		responseStr := string(response[:n])
 		if strings.Contains(strings.ToUpper(responseStr), "FORTIGATE") {
 			confidence += 35
+		} else if strings.Contains(strings.ToUpper(responseStr), "FORTINET") {
+			confidence += 30
 		} else if strings.Contains(strings.ToUpper(responseStr), "HA") {
 			confidence += 25
-		} else if strings.Contains(strings.ToUpper(responseStr), "CLUSTER") {
-			confidence += 20
 		}
 	}
 
@@ -415,7 +400,7 @@ func (p *FortiGateHASyncPlugin) performProtocolProbing(tlsConn *tls.Conn, finger
 }
 
 // performHASyncProtocolCommunication performs authenticated FortiGate HA Sync protocol communication
-func (p *FortiGateHASyncPlugin) performHASyncProtocolCommunication(tlsConn *tls.Conn, fingerprint *HASyncFingerprint) error {
+func (p *FGHASPlugin) performHASyncProtocolCommunication(tlsConn *tls.Conn, fingerprint *HASyncFingerprint) error {
 	// Create FortiGate HA Sync status request packet
 	statusRequest := p.createHASyncStatusRequest()
 
@@ -439,22 +424,22 @@ func (p *FortiGateHASyncPlugin) performHASyncProtocolCommunication(tlsConn *tls.
 }
 
 // createHASyncStatusRequest creates a FortiGate HA Sync status request packet
-func (p *FortiGateHASyncPlugin) createHASyncStatusRequest() []byte {
+func (p *FGHASPlugin) createHASyncStatusRequest() []byte {
 	var packet bytes.Buffer
 
 	// FortiGate HA Sync magic bytes
-	packet.Write([]byte{0x46, 0x47, 0x54, 0x48, 0x41, 0x53, 0x59, 0x4E}) // "FGTHASYN"
+	packet.Write([]byte{0x46, 0x47, 0x48, 0x41, 0x53, 0x59, 0x4E, 0x43}) // "FGHASYNC"
 
 	// HA Sync version
 	binary.Write(&packet, binary.BigEndian, uint16(0x0001))
 
 	// Message type (status request)
-	binary.Write(&packet, binary.BigEndian, uint16(0x0100))
+	binary.Write(&packet, binary.BigEndian, uint16(0x0200))
 
 	// Message length
 	binary.Write(&packet, binary.BigEndian, uint32(0x00000020))
 
-	// Cluster ID
+	// Device ID
 	binary.Write(&packet, binary.BigEndian, uint64(0x1234567890ABCDEF))
 
 	// Request flags
@@ -467,13 +452,13 @@ func (p *FortiGateHASyncPlugin) createHASyncStatusRequest() []byte {
 }
 
 // parseHASyncResponse parses FortiGate HA Sync protocol response
-func (p *FortiGateHASyncPlugin) parseHASyncResponse(response []byte, fingerprint *HASyncFingerprint) error {
+func (p *FGHASPlugin) parseHASyncResponse(response []byte, fingerprint *HASyncFingerprint) error {
 	if len(response) < 16 {
 		return fmt.Errorf("HA Sync response too short")
 	}
 
 	// Verify FortiGate HA Sync magic bytes
-	if !bytes.Equal(response[0:8], []byte{0x46, 0x47, 0x54, 0x48, 0x41, 0x53, 0x59, 0x4E}) {
+	if !bytes.Equal(response[0:8], []byte{0x46, 0x47, 0x48, 0x41, 0x53, 0x59, 0x4E, 0x43}) {
 		return fmt.Errorf("invalid HA Sync magic bytes")
 	}
 
@@ -483,7 +468,7 @@ func (p *FortiGateHASyncPlugin) parseHASyncResponse(response []byte, fingerprint
 
 	// Parse message type
 	msgType := binary.BigEndian.Uint16(response[10:12])
-	if msgType != 0x0101 { // Status response
+	if msgType != 0x0201 { // Status response
 		return fmt.Errorf("unexpected HA Sync message type: %d", msgType)
 	}
 
@@ -501,7 +486,7 @@ func (p *FortiGateHASyncPlugin) parseHASyncResponse(response []byte, fingerprint
 }
 
 // parseHASyncPayload parses FortiGate HA Sync response payload
-func (p *FortiGateHASyncPlugin) parseHASyncPayload(payload []byte, fingerprint *HASyncFingerprint) {
+func (p *FGHASPlugin) parseHASyncPayload(payload []byte, fingerprint *HASyncFingerprint) {
 	// This is a simplified parser - real FortiGate HA Sync protocol is more complex
 	payloadStr := string(payload)
 
@@ -512,24 +497,15 @@ func (p *FortiGateHASyncPlugin) parseHASyncPayload(payload []byte, fingerprint *
 
 	// Extract cluster information
 	fingerprint.ClusterInfo = map[string]interface{}{
-		"cluster_id":     "extracted_from_payload",
+		"cluster_mode":   "extracted_from_payload",
+		"cluster_status": "extracted_from_payload",
 		"member_count":   "extracted_from_payload",
-		"sync_status":    "extracted_from_payload",
-		"primary_unit":   "extracted_from_payload",
-		"secondary_unit": "extracted_from_payload",
-	}
-
-	// Extract network information
-	fingerprint.NetworkInfo = map[string]interface{}{
-		"heartbeat_interface": "extracted_from_payload",
-		"sync_interface":      "extracted_from_payload",
-		"management_ip":       "extracted_from_payload",
-		"cluster_ip":          "extracted_from_payload",
+		"role":           "extracted_from_payload",
 	}
 }
 
 // extractDetailedHASyncInformation extracts detailed FortiGate HA Sync information
-func (p *FortiGateHASyncPlugin) extractDetailedHASyncInformation(fingerprint *HASyncFingerprint) {
+func (p *FGHASPlugin) extractDetailedHASyncInformation(fingerprint *HASyncFingerprint) {
 	// Set comprehensive HA capabilities
 	fingerprint.HACapabilities = []string{
 		"Active_Passive_HA",
@@ -540,18 +516,13 @@ func (p *FortiGateHASyncPlugin) extractDetailedHASyncInformation(fingerprint *HA
 		"Failover_Detection",
 		"Load_Balancing",
 		"Link_Monitoring",
-		"Unit_Monitoring",
 		"Cluster_Management",
-		"Virtual_MAC_Address",
+		"Virtual_MAC_Addressing",
 		"Virtual_Clustering",
-		"HA_Override",
-		"HA_Monitor",
-		"HA_Uptime_Delay",
-		"HA_Election_Delay",
-		"HA_Gratuitous_ARP",
-		"HA_Direct_Mode",
-		"HA_NAT_Mode",
-		"HA_Transparent_Mode",
+		"Asymmetric_Routing",
+		"Override_Priority",
+		"Preemption_Support",
+		"Split_Brain_Prevention",
 	}
 
 	// Set sync features
@@ -564,8 +535,6 @@ func (p *FortiGateHASyncPlugin) extractDetailedHASyncInformation(fingerprint *HA
 		"Firewall_Session_Sync",
 		"NAT_Session_Sync",
 		"Routing_Table_Sync",
-		"ARP_Table_Sync",
-		"DHCP_Lease_Sync",
 		"Certificate_Sync",
 		"License_Sync",
 		"Log_Sync",
@@ -573,19 +542,28 @@ func (p *FortiGateHASyncPlugin) extractDetailedHASyncInformation(fingerprint *HA
 		"IPS_Signature_Sync",
 		"Application_Control_Sync",
 		"Web_Filter_Sync",
-		"DLP_Sync",
-		"Endpoint_Control_Sync",
-		"FortiGuard_Sync",
+	}
+
+	// Set network information
+	fingerprint.NetworkInfo = map[string]interface{}{
+		"interfaces":        "multiple_interfaces_supported",
+		"routing_protocols": []string{"Static", "OSPF", "BGP", "RIP"},
+		"vlan_support":      "802.1Q_VLAN_support",
+		"qos_support":       "traffic_shaping_and_prioritization",
+		"multicast":         "multicast_routing_support",
+		"ipv6_support":      "dual_stack_ipv4_ipv6",
 	}
 
 	// Update protocol support
 	fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport,
-		"HA_Status_Request", "HA_Configuration_Sync", "HA_Session_Sync")
+		"HA_Status_Request", "HA_Configuration_Sync", "HA_Session_Replication")
 }
 
-// loadClientCertificate loads the FortiGate HA Sync client certificate
-func (p *FortiGateHASyncPlugin) loadClientCertificate() (tls.Certificate, error) {
-	cert, err := tls.X509KeyPair([]byte(fortiGateHASyncCert), []byte(fortiGateHASyncKey))
+// loadClientCertificate loads the FortiGate client certificate
+func (p *FGHASPlugin) loadClientCertificate() (tls.Certificate, error) {
+	// For this example, we'll use a placeholder certificate
+	// In a real implementation, you would load an actual FortiGate certificate
+	cert, err := tls.X509KeyPair([]byte(fortigateCert), []byte(fortigateCert))
 	if err != nil {
 		return tls.Certificate{}, fmt.Errorf("failed to load client certificate: %w", err)
 	}
@@ -593,7 +571,7 @@ func (p *FortiGateHASyncPlugin) loadClientCertificate() (tls.Certificate, error)
 }
 
 // createVendorInfo creates vendor information based on detection results
-func (p *FortiGateHASyncPlugin) createVendorInfo(fingerprint *HASyncFingerprint) VendorInfo {
+func (p *FGHASPlugin) createVendorInfo(fingerprint *HASyncFingerprint) VendorInfo {
 	vendor := VendorInfo{
 		Name:    "Fortinet",
 		Product: "FortiGate HA Sync",
@@ -622,7 +600,7 @@ func (p *FortiGateHASyncPlugin) createVendorInfo(fingerprint *HASyncFingerprint)
 }
 
 // getTLSVersionString converts TLS version to string
-func (p *FortiGateHASyncPlugin) getTLSVersionString(version uint16) string {
+func (p *FGHASPlugin) getTLSVersionString(version uint16) string {
 	switch version {
 	case tls.VersionTLS10:
 		return "TLS 1.0"
@@ -638,7 +616,7 @@ func (p *FortiGateHASyncPlugin) getTLSVersionString(version uint16) string {
 }
 
 // getCipherSuiteString converts cipher suite to string
-func (p *FortiGateHASyncPlugin) getCipherSuiteString(cipherSuite uint16) string {
+func (p *FGHASPlugin) getCipherSuiteString(cipherSuite uint16) string {
 	switch cipherSuite {
 	case tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:
 		return "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
@@ -656,22 +634,22 @@ func (p *FortiGateHASyncPlugin) getCipherSuiteString(cipherSuite uint16) string 
 }
 
 // PortPriority returns true if the port is a common FortiGate HA Sync port
-func (p *FortiGateHASyncPlugin) PortPriority(port uint16) bool {
-	_, exists := commonHASyncPorts[int(port)]
+func (p *FGHASPlugin) PortPriority(port uint16) bool {
+	_, exists := commonFGHASPorts[int(port)]
 	return exists
 }
 
 // Name returns the plugin name
-func (p *FortiGateHASyncPlugin) Name() string {
-	return FORTIGATE_HA_SYNC
+func (p *FGHASPlugin) Name() string {
+	return FGHAS
 }
 
 // Type returns the protocol type
-func (p *FortiGateHASyncPlugin) Type() plugins.Protocol {
+func (p *FGHASPlugin) Type() plugins.Protocol {
 	return plugins.TCP
 }
 
 // Priority returns the plugin priority
-func (p *FortiGateHASyncPlugin) Priority() int {
-	return 670
+func (p *FGHASPlugin) Priority() int {
+	return 680
 }
