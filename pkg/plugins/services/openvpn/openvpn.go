@@ -95,5 +95,5 @@ func (p *Plugin) Type() plugins.Protocol {
 }
 
 func (p *Plugin) Priority() int {
-	return 708
+	return 580
 }
