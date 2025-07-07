@@ -86,6 +86,7 @@ const (
 	ProtoRADIUS      = "radius"
 	ProtoSIC         = "sic"
 	ProtoZabbixAgent = "zabbix"
+	ProtoSIP         = "sip"
 )
 
 // Used as a key for maps to plugins.
@@ -292,7 +293,10 @@ func (e Service) Metadata() Metadata {
 		var p ServiceZabbixAgent
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
-
+	case ProtoSIP:
+		var p ServiceSIP
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
 	//default
 	default:
 		var p ServiceUnknown
@@ -1095,4 +1099,38 @@ type ServiceZabbixAgent struct {
 
 	// Detection metadata
 	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
+}
+
+func (e ServiceSIP) Type() string { return ProtoSIP }
+
+type ServiceSIP struct {
+	// Vendor information
+	VendorName        string `json:"vendorName,omitempty"`
+	VendorProduct     string `json:"vendorProduct,omitempty"`
+	VendorVersion     string `json:"vendorVersion,omitempty"`
+	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
+	VendorMethod      string `json:"vendorMethod,omitempty"`
+	VendorDescription string `json:"vendorDescription,omitempty"`
+
+	// SIP response information
+	StatusCode   int    `json:"statusCode,omitempty"`
+	ReasonPhrase string `json:"reasonPhrase,omitempty"`
+	HeadersCount int    `json:"headersCount,omitempty"`
+
+	// Important SIP headers
+	UserAgent string `json:"userAgent,omitempty"`
+	Server    string `json:"server,omitempty"`
+	Allow     string `json:"allow,omitempty"`
+	Supported string `json:"supported,omitempty"`
+	Contact   string `json:"contact,omitempty"`
+
+	// Protocol information
+	StandardPort int      `json:"standardPort,omitempty"`
+	SecurePort   int      `json:"securePort,omitempty"`
+	Transport    []string `json:"transport,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+
+	// Detection metadata
+	DetectionMethod string `json:"detectionMethod,omitempty"`
+	ResponseTime    int64  `json:"responseTime,omitempty"` // in milliseconds
 }
