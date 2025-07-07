@@ -72,4 +72,5 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pxgrid"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/radius"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sic"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
 )
