@@ -1,12 +1,12 @@
-// Fixed SIP plugin with proper target host extraction
+// SIP plugin with device banner extraction
 
 package sip
 
 import (
 	"crypto/rand"
 	"fmt"
-	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -65,47 +65,50 @@ func createOPTIONSRequest(target string, sourceIP string) string {
 	return request
 }
 
-// parseSIPResponse parses a SIP response message with debug output
-func parseSIPResponse(response string, port int) (*SIPResponse, error) {
-	log.Printf("DEBUG: Parsing SIP response (length: %d)", len(response))
-	log.Printf("DEBUG: Raw response: %q", response)
+// createINVITERequest creates a SIP INVITE request (alternative method)
+func createINVITERequest(target string, sourceIP string) string {
+	callID := generateCallID(sourceIP)
+	branch := generateBranch()
 
-	if len(response) < 12 { // Minimum SIP response: "SIP/2.0 200"
-		log.Printf("DEBUG: Response too short to be SIP (length: %d)", len(response))
+	request := fmt.Sprintf("INVITE sip:test@%s SIP/2.0\r\n", target)
+	request += fmt.Sprintf("Via: SIP/2.0/UDP %s:5060;branch=%s\r\n", sourceIP, branch)
+	request += fmt.Sprintf("From: <sip:test@%s>;tag=test\r\n", sourceIP)
+	request += fmt.Sprintf("To: <sip:test@%s>\r\n", target)
+	request += fmt.Sprintf("Call-ID: %s\r\n", callID)
+	request += "CSeq: 1 INVITE\r\n"
+	request += "Max-Forwards: 70\r\n"
+	request += "User-Agent: Fingerprintx-SIP-Scanner\r\n"
+	request += "Contact: <sip:test@" + sourceIP + ":5060>\r\n"
+	request += "Content-Length: 0\r\n"
+	request += "\r\n"
+
+	return request
+}
+
+// parseSIPResponse parses a SIP response message
+func parseSIPResponse(response string) (*SIPResponse, error) {
+	if len(response) < 12 {
 		return nil, fmt.Errorf("response too short to be SIP")
 	}
 
 	lines := strings.Split(response, "\r\n")
 	if len(lines) < 1 {
-		log.Printf("DEBUG: Invalid SIP response format - no lines")
 		return nil, fmt.Errorf("invalid SIP response format")
 	}
 
 	// Parse status line
 	statusLine := lines[0]
-	log.Printf("DEBUG: Status line: %q", statusLine)
-
 	parts := strings.SplitN(statusLine, " ", 3)
-	if len(parts) < 3 {
-		log.Printf("DEBUG: Invalid status line format - parts: %v", parts)
-		return nil, fmt.Errorf("invalid SIP status line format")
+	if len(parts) < 3 || parts[0] != "SIP/2.0" {
+		return nil, fmt.Errorf("not a SIP response")
 	}
 
-	// Must start with exactly "SIP/2.0"
-	if parts[0] != "SIP/2.0" {
-		log.Printf("DEBUG: Not a SIP response - protocol: %q", parts[0])
-		return nil, fmt.Errorf("not a SIP response - invalid protocol: %s", parts[0])
-	}
-
-	// Status code must be valid 3-digit number
 	statusCode, err := strconv.Atoi(parts[1])
 	if err != nil || statusCode < 100 || statusCode > 699 {
-		log.Printf("DEBUG: Invalid status code: %q (error: %v)", parts[1], err)
-		return nil, fmt.Errorf("invalid SIP status code: %s", parts[1])
+		return nil, fmt.Errorf("invalid SIP status code")
 	}
 
 	reasonPhrase := parts[2]
-	log.Printf("DEBUG: Parsed status: %d %s", statusCode, reasonPhrase)
 
 	// Parse headers
 	headers := make(map[string]string)
@@ -123,7 +126,6 @@ func parseSIPResponse(response string, port int) (*SIPResponse, error) {
 			headerName := strings.ToLower(strings.TrimSpace(line[:colonIndex]))
 			headerValue := strings.TrimSpace(line[colonIndex+1:])
 			headers[headerName] = headerValue
-			log.Printf("DEBUG: Header: %s = %s", headerName, headerValue)
 		}
 	}
 
@@ -131,10 +133,7 @@ func parseSIPResponse(response string, port int) (*SIPResponse, error) {
 	var body string
 	if bodyStart > 0 && bodyStart < len(lines) {
 		body = strings.Join(lines[bodyStart:], "\r\n")
-		log.Printf("DEBUG: Body length: %d", len(body))
 	}
-
-	log.Printf("DEBUG: Successfully parsed SIP response with %d headers", len(headers))
 
 	return &SIPResponse{
 		StatusCode:   statusCode,
@@ -145,139 +144,248 @@ func parseSIPResponse(response string, port int) (*SIPResponse, error) {
 	}, nil
 }
 
-// validateSIPResponse performs validation with debug output
-func validateSIPResponse(response *SIPResponse, port int) bool {
-	log.Printf("DEBUG: Validating SIP response for port %d", port)
-
-	responseText := response.RawResponse
-
-	// Check for obvious non-SIP protocols first
-	if strings.Contains(responseText, "RFB ") ||
-		strings.Contains(responseText, "FictusVNC") ||
-		strings.Contains(responseText, "VNC ") {
-		log.Printf("DEBUG: Rejected as VNC protocol")
-		return false
-	}
-
-	if strings.HasPrefix(responseText, "HTTP/") {
-		log.Printf("DEBUG: Rejected as HTTP protocol")
-		return false
-	}
-
-	if strings.HasPrefix(responseText, "SSH-") {
-		log.Printf("DEBUG: Rejected as SSH protocol")
-		return false
-	}
-
-	if strings.Contains(responseText, "220 ") && strings.Contains(responseText, "FTP") {
-		log.Printf("DEBUG: Rejected as FTP protocol")
-		return false
-	}
-
-	// For standard SIP ports (5060, 5061), be more lenient
-	if port == 5060 || port == 5061 {
-		log.Printf("DEBUG: Standard SIP port - accepting response")
-		return true
-	}
-
-	// For non-standard ports, require more validation
-	sipPatterns := []string{
-		"sip:", "SIP/2.0", "z9hG4bK", "tag=", "branch=",
-	}
-
-	foundSipPatterns := 0
-	responseTextLower := strings.ToLower(responseText)
-
-	for _, pattern := range sipPatterns {
-		if strings.Contains(responseTextLower, strings.ToLower(pattern)) {
-			foundSipPatterns++
-			log.Printf("DEBUG: Found SIP pattern: %s", pattern)
+// extractDeviceBanner extracts device and version information into a banner string
+func extractDeviceBanner(response *SIPResponse) string {
+	// Try User-Agent header first (most common)
+	if userAgent, exists := response.Headers["user-agent"]; exists {
+		banner := parseDeviceFromHeader(userAgent)
+		if banner != "" {
+			return banner
 		}
 	}
 
-	log.Printf("DEBUG: Found %d SIP patterns (need 2 for non-standard ports)", foundSipPatterns)
-
-	// For non-standard ports, require at least 2 SIP patterns
-	if foundSipPatterns < 2 {
-		log.Printf("DEBUG: Insufficient SIP patterns for non-standard port")
-		return false
+	// Try Server header
+	if server, exists := response.Headers["server"]; exists {
+		banner := parseDeviceFromHeader(server)
+		if banner != "" {
+			return banner
+		}
 	}
 
-	log.Printf("DEBUG: SIP validation passed")
-	return true
+	// Try Contact header (sometimes contains device info)
+	if contact, exists := response.Headers["contact"]; exists {
+		banner := parseDeviceFromHeader(contact)
+		if banner != "" {
+			return banner
+		}
+	}
+
+	// Fallback: create generic banner from status
+	return fmt.Sprintf("SIP Server (%d %s)", response.StatusCode, response.ReasonPhrase)
 }
 
-// detectSIPVendor performs detection with extensive debug output
-func detectSIPVendor(conn net.Conn, timeout time.Duration, target string, port int) (*SIPResponse, error) {
-	log.Printf("DEBUG: Starting SIP detection for %s:%d", target, port)
+// parseDeviceFromHeader parses device information from SIP headers
+func parseDeviceFromHeader(header string) string {
+	// Device patterns with version extraction
+	patterns := []struct {
+		regex  *regexp.Regexp
+		format string
+	}{
+		// Asterisk patterns
+		{
+			regex:  regexp.MustCompile(`(?i)asterisk\s+pbx\s+(\d+\.\d+\.\d+)`),
+			format: "Asterisk PBX %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)asterisk\s+(\d+\.\d+\.\d+)`),
+			format: "Asterisk %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)asterisk`),
+			format: "Asterisk PBX",
+		},
 
-	// Get source IP for SIP message construction
+		// FreeSWITCH patterns
+		{
+			regex:  regexp.MustCompile(`(?i)freeswitch-mod_sofia/(\d+\.\d+\.\d+)`),
+			format: "FreeSWITCH %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)freeswitch`),
+			format: "FreeSWITCH",
+		},
+
+		// Cisco patterns
+		{
+			regex:  regexp.MustCompile(`(?i)cisco-cucm(\d+\.\d+)`),
+			format: "Cisco CUCM %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)cisco-sipgateway/ios-(\d+\.x)`),
+			format: "Cisco SIP Gateway IOS %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)csco/(\d+)`),
+			format: "Cisco IP Phone %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)cisco`),
+			format: "Cisco SIP Device",
+		},
+
+		// Avaya patterns
+		{
+			regex:  regexp.MustCompile(`(?i)avaya\s+one-x\s+deskphone`),
+			format: "Avaya One-X Deskphone",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)avaya\s+cm/r(\d+x\.\d+\.\d+\.\d+)`),
+			format: "Avaya Communication Manager %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)avaya`),
+			format: "Avaya Communication System",
+		},
+
+		// 3CX patterns
+		{
+			regex:  regexp.MustCompile(`(?i)3cx\s+phone\s+system\s+(\d+\.\d+\.\d+\.\d+)`),
+			format: "3CX Phone System %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)3cx`),
+			format: "3CX Phone System",
+		},
+
+		// Microsoft patterns
+		{
+			regex:  regexp.MustCompile(`(?i)uccapi`),
+			format: "Microsoft Skype for Business",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)microsoft.*teams`),
+			format: "Microsoft Teams",
+		},
+
+		// OpenSIPS/Kamailio patterns
+		{
+			regex:  regexp.MustCompile(`(?i)opensips\s*\((\d+\.\d+\.\d+)\)`),
+			format: "OpenSIPS %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)kamailio\s*\((\d+\.\d+\.\d+)\)`),
+			format: "Kamailio %s",
+		},
+
+		// Hardware phone patterns
+		{
+			regex:  regexp.MustCompile(`(?i)grandstream\s+(\w+)\s+(\d+\.\d+\.\d+\.\d+)`),
+			format: "Grandstream %s %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)polycom.*soundpoint`),
+			format: "Polycom SoundPoint IP",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)yealink\s+sip-(\w+)`),
+			format: "Yealink IP Phone %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)snom(\d+)`),
+			format: "Snom IP Phone %s",
+		},
+
+		// Software client patterns
+		{
+			regex:  regexp.MustCompile(`(?i)x-lite\s+(release\s+)?(\d+\w*)`),
+			format: "CounterPath X-Lite %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)linphone/(\d+\.\d+\.\d+)`),
+			format: "Linphone %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)zoiper\s+r(\d+)`),
+			format: "Zoiper %s",
+		},
+
+		// Generic patterns
+		{
+			regex:  regexp.MustCompile(`(?i)(\w+)\s+(\d+\.\d+\.\d+)`),
+			format: "%s %s",
+		},
+		{
+			regex:  regexp.MustCompile(`(?i)(\w+)/(\d+\.\d+\.\d+)`),
+			format: "%s %s",
+		},
+	}
+
+	// Try each pattern
+	for _, pattern := range patterns {
+		if matches := pattern.regex.FindStringSubmatch(header); matches != nil {
+			if len(matches) == 2 {
+				// Single capture group (version)
+				return fmt.Sprintf(pattern.format, matches[1])
+			} else if len(matches) == 3 {
+				// Two capture groups (model + version)
+				return fmt.Sprintf(pattern.format, matches[1], matches[2])
+			} else {
+				// No capture groups
+				return pattern.format
+			}
+		}
+	}
+
+	// If no pattern matches, try to extract basic info
+	if strings.Contains(strings.ToLower(header), "phone") {
+		return "IP Phone"
+	}
+	if strings.Contains(strings.ToLower(header), "pbx") {
+		return "PBX System"
+	}
+	if strings.Contains(strings.ToLower(header), "gateway") {
+		return "SIP Gateway"
+	}
+
+	return ""
+}
+
+// detectSIPService performs SIP detection with multiple methods
+func detectSIPService(conn net.Conn, timeout time.Duration, target string) (*SIPResponse, error) {
 	localAddr := conn.LocalAddr().(*net.UDPAddr)
 	sourceIP := localAddr.IP.String()
-	log.Printf("DEBUG: Source IP: %s", sourceIP)
 
-	var sipResponse *SIPResponse
-
-	// Method 1: OPTIONS probe
+	// Method 1: Try OPTIONS request
 	optionsRequest := createOPTIONSRequest(target, sourceIP)
-	log.Printf("DEBUG: Sending OPTIONS request:")
-	log.Printf("DEBUG: Request: %q", optionsRequest)
-
 	response, err := utils.SendRecv(conn, []byte(optionsRequest), timeout)
-	log.Printf("DEBUG: SendRecv result - error: %v, response length: %d", err, len(response))
 
-	if err != nil {
-		log.Printf("DEBUG: SendRecv failed: %v", err)
-		return nil, fmt.Errorf("SendRecv failed: %v", err)
+	if err == nil && len(response) > 0 {
+		if parsedResponse, parseErr := parseSIPResponse(string(response)); parseErr == nil {
+			return parsedResponse, nil
+		}
 	}
 
-	if len(response) == 0 {
-		log.Printf("DEBUG: Empty response received")
-		return nil, fmt.Errorf("empty response received")
+	// Method 2: Try INVITE request (some servers respond better to INVITE)
+	inviteRequest := createINVITERequest(target, sourceIP)
+	response, err = utils.SendRecv(conn, []byte(inviteRequest), timeout)
+
+	if err == nil && len(response) > 0 {
+		if parsedResponse, parseErr := parseSIPResponse(string(response)); parseErr == nil {
+			return parsedResponse, nil
+		}
 	}
 
-	log.Printf("DEBUG: Raw response received: %q", string(response))
-
-	// Parse and validate SIP response
-	parsedResponse, parseErr := parseSIPResponse(string(response), port)
-	if parseErr != nil {
-		log.Printf("DEBUG: Parse failed: %v", parseErr)
-		return nil, fmt.Errorf("not a valid SIP response: %v", parseErr)
-	}
-
-	log.Printf("DEBUG: Parse successful")
-
-	// Additional SIP validation
-	if !validateSIPResponse(parsedResponse, port) {
-		log.Printf("DEBUG: Validation failed")
-		return nil, fmt.Errorf("response failed SIP validation")
-	}
-
-	log.Printf("DEBUG: Validation successful")
-	sipResponse = parsedResponse
-
-	log.Printf("DEBUG: SIP detection successful - Status: %d %s", sipResponse.StatusCode, sipResponse.ReasonPhrase)
-	return sipResponse, nil
+	return nil, fmt.Errorf("no valid SIP response received")
 }
 
-// createServiceWithVendorInfo creates a service object with debug output
-func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *plugins.Service {
-	log.Printf("DEBUG: Creating service with status %d %s", response.StatusCode, response.ReasonPhrase)
+// createServiceWithBanner creates a service object with device banner
+func createServiceWithBanner(target plugins.Target, response *SIPResponse) *plugins.Service {
+	// Extract device banner
+	deviceBanner := extractDeviceBanner(response)
 
-	// Create ServiceSIP struct with basic information
+	// Create ServiceSIP struct
 	serviceSIP := plugins.ServiceSIP{
-		// Vendor information
-		VendorName:        "",
-		VendorProduct:     "",
-		VendorVersion:     "",
-		VendorConfidence:  0,
-		VendorMethod:      "",
-		VendorDescription: "",
-
-		// SIP response information
+		// Basic SIP information
 		StatusCode:   response.StatusCode,
 		ReasonPhrase: response.ReasonPhrase,
 		HeadersCount: len(response.Headers),
+
+		// Device banner
+		VendorName:        deviceBanner, // Use banner as vendor name for now
+		VendorProduct:     deviceBanner,
+		VendorConfidence:  85,
+		VendorMethod:      "SIP Header Analysis",
+		VendorDescription: fmt.Sprintf("Device identified from SIP headers: %s", deviceBanner),
 
 		// Important SIP headers
 		UserAgent: "",
@@ -293,11 +401,11 @@ func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *
 		Methods:      []string{"INVITE", "ACK", "BYE", "CANCEL", "REGISTER", "OPTIONS"},
 
 		// Detection metadata
-		DetectionMethod: "OPTIONS",
+		DetectionMethod: "SIP Protocol",
 		ResponseTime:    0,
 
-		// Security features (passive detection)
-		AuthenticationRequired: false,
+		// Security features
+		AuthenticationRequired: response.StatusCode == 401 || response.StatusCode == 407,
 		AuthenticationMethods:  []string{},
 		TLSSupported:           false,
 		SecurityHeaders:        []string{},
@@ -305,7 +413,7 @@ func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *
 
 		// Device fingerprinting
 		DeviceType:      "",
-		DeviceModel:     "",
+		DeviceModel:     deviceBanner,
 		FirmwareVersion: "",
 		SupportedCodecs: []string{},
 		HeaderOrder:     []string{},
@@ -334,26 +442,19 @@ func createServiceWithVendorInfo(target plugins.Target, response *SIPResponse) *
 		serviceSIP.Contact = contact
 	}
 
-	log.Printf("DEBUG: Service created successfully")
 	return plugins.CreateServiceFrom(target, serviceSIP, false, "", plugins.UDP)
 }
 
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// FIXED: Proper target host extraction for netip.AddrPort
+	// Extract target host
 	targetHost := target.Address.Addr().String()
 	targetPort := int(target.Address.Port())
 
-	// Fallback: use target.Host if available and targetHost is empty
 	if targetHost == "" && target.Host != "" {
 		targetHost = target.Host
 	}
 
-	log.Printf("DEBUG: SIP plugin starting for %s:%d", targetHost, targetPort)
-	log.Printf("DEBUG: Target: %s, Port: %d", targetHost, targetPort)
-
-	// Ensure we have a valid target host
 	if targetHost == "" {
-		log.Printf("DEBUG: No target host found")
 		return nil, fmt.Errorf("no target host found")
 	}
 
@@ -363,22 +464,18 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 		sipTarget = fmt.Sprintf("%s:%d", targetHost, targetPort)
 	}
 
-	// Attempt detection with fixed target
-	response, err := detectSIPVendor(conn, timeout, sipTarget, targetPort)
+	// Attempt SIP detection
+	response, err := detectSIPService(conn, timeout, sipTarget)
 	if err != nil {
-		log.Printf("DEBUG: Detection failed: %v", err)
 		return nil, nil
 	}
 
-	// Only return service if we have a validated SIP response
 	if response == nil {
-		log.Printf("DEBUG: No valid SIP response")
 		return nil, nil
 	}
 
-	log.Printf("DEBUG: Creating service result")
-	// Create service with detected information
-	return createServiceWithVendorInfo(target, response), nil
+	// Create service with device banner
+	return createServiceWithBanner(target, response), nil
 }
 
 func (p *Plugin) PortPriority(i uint16) bool {
