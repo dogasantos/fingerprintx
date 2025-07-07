@@ -1,17 +1,3 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package openvpn
 
 import (
@@ -20,11 +6,11 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
-	utils "github.com/praetorian-inc/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
 )
 
-const OPENVPN = "OpenVPN"
+const OPENVPN = "openvpn"
 
 type Plugin struct{}
 
@@ -34,6 +20,7 @@ func init() {
 
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	/**
+	 * Based on the original working OpenVPN plugin
 	 * https://build.openvpn.net/doxygen/ssl__pkt_8h_source.html
 	 * https://openvpn.net/community-resources/openvpn-protocol/
 	 *
@@ -75,15 +62,41 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 				response[i:i+SessionIDLength],
 				InitialConnectionPackage[1:1+SessionIDLength],
 			) {
-				return plugins.CreateServiceFrom(target, plugins.ServiceOpenVPN{}, false, "", plugins.UDP), nil
+				// Create service result using ServiceOpenVPN struct
+				serviceOpenVPN := plugins.ServiceOpenVPN{
+					// Vendor information
+					VendorName:        "OpenVPN",
+					VendorProduct:     "OpenVPN Server",
+					VendorVersion:     "2.0+",
+					VendorConfidence:  95,
+					VendorMethod:      "OpenVPN Protocol Detection",
+					VendorDescription: "OpenVPN server detected via control packet exchange",
+
+					// Basic OpenVPN information
+					ResponseSize:     len(response),
+					HandshakePattern: "CLIENT_RESET_SERVER_RESET",
+					PacketStructure:  "OpenVPN_Control_Packet",
+					SupportsAuth:     false, // tls-auth would block this detection
+					OpcodeSequence:   []uint8{PControlHardResetServerV2},
+
+					// Protocol information
+					StandardPort:   1194,
+					Transport:      "UDP",
+					Encryption:     "OpenVPN",
+					Authentication: []string{"None"}, // No auth detected via this method
+					Compression:    []string{"Unknown"},
+					SessionID:      "",
+				}
+
+				return plugins.CreateServiceFrom(target, serviceOpenVPN, false, "", plugins.UDP), nil
 			}
 		}
 	}
 	return nil, nil
 }
 
-func (p *Plugin) PortPriority(i uint16) bool {
-	return i == 1194
+func (p *Plugin) PortPriority(port uint16) bool {
+	return port == 1194 || port == 1723
 }
 
 func (p *Plugin) Name() string {
