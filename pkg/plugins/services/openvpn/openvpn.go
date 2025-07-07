@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
 const OPENVPN = "openvpn"

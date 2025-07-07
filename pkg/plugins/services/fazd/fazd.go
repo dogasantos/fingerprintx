@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/praetorian-inc/fingerprintx/pkg/plugins"
+	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
 type FAZDPlugin struct{}
