@@ -43,6 +43,7 @@ type FTDFingerprint struct {
 	NetworkingFeatures     []string
 	ThreatDefenseInfo      map[string]interface{}
 	PolicyInfo             map[string]interface{}
+	NetworkInfo            map[string]interface{}
 }
 
 var (
@@ -94,7 +95,7 @@ ej5UUO4uHUG9IJNYWHRYhTE6s2WaWDVT
 	ciscoFTDKey = `-----BEGIN PRIVATE KEY-----
 MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHIBs0ZU03lYyH
 BPA+8+1Z6eiyizBhOe1S+KrNXzsb06yto+71m1TB0rDqX/LWgAJueapqnkv/8KAi
-UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykHeajkeT8rKzIRSnacD
+UKt7eZpqtTOjB5tp6JukPnTm3LH4Yni6yBcKfV9V7fWBykEeajkeT8rKzIRSnacD
 CX5pc7llnCFHopYHnD+nqvRkudILuJvtDStHdy07Jls9YyzQt5O+H2MGA7Gj54Zf
 7bMXKmVq2B1ByYR+XqfGAMROhKNiRuuwVziPyW8a1jxIfs0S6gO2a1ngT5dABCF0
 yvkiASU1tHaZ8RHBusAUEMQqfI2fkZWhaSowXWLnA1Uw7ZC2m73rTqwJ/po3EbrY
@@ -103,16 +104,16 @@ ABGFNVFDggu3YZo6ta+8sAUcogc11zl4pCuF286Jzgb7WQMxdZW2bgfFM7g+8adj
 pdjv/EOAniRL+b37nt3TzSc154fOtojUGclBoAF/IMYroDlmIoLPDcZzOIAxC+GU
 BCkCh/a3AFnhkkym0IGx4i89ji+nxcY5vEqD4n4Q49gkebxjmTVBq7YEU2YwOsbT
 0BO9jmYKE0wumetNpYJsR2qVI7dUmJMNdcEah/A9ODqMM2BJUxovW8XgR9wOIXN2
-3aWwmPeAtTnVhvBaHJL/ItGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
+3aWwmPeAtTnVhvBaHJL7EtGOGjmdcM1pwChowCWj4QKBgQD5EMo2A9+qeziSt3Ve
 nmD1o7zDyGAe0bGLN4rIou6I/Zz8p7ckRYIAw2HhmsE2C2ZF8OS9GWmsu23tnTBl
 DQTj1fSquw1cjLxUgwTkLUF7FTUBrxLstYSz1EJSzd8+V8mLI3bXriq8yFVK7z8y
 jFBB3BqkqUcBjIWFAMDvWoyJtQKBgQDMq15o9bhWuR7rGTvzhDiZvDNemTHHdRWz
 6cxb4d4TWsRsK73Bv1VFRg/SpDTg88kV2X8wqt7yfR2qhcyiAAFJq9pflG/rUSp6
 KvNbcXW7ys+x33x+MkZtbSh8TJ3SP9IoppawB/SP/p2YxkdgjPF/sllPEAkgHznW
 Gwk5jxRxPQKBgQDQAKGfcqS8b6PTg7tVhddbzZ67sv/zPRSVO5F/9fJYHdWZe0eL
-1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXtbj
+1zC3CnUYQHHTfLmw93lQI4UJaI5pvrjH65OF4w0t+IE0JaSyv6i6FsF01UUrXrtj
 MMTemgm5tY0XN6FtvfRmM2IlvvjcV+njgSMVnYfytBxEwuJPLU3zlx9/cQKBgQDB
-2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrtkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
+2GEPugLAqI6fDoRYjNdqy/Q/WYrrJXrLrkkuAQvreuFkrj0IHuZtOQFNeNbYZC0E
 871iY8PLGTMayaTZnnWZyBmIwzcJQhOgJ8PbzOc8WMdD6a6oe4d2ppdcutgTRP0Q
 IU/BI5e/NeEfzFPYH0Wvs0Sg/EgYU1rc7ThceqZa5QKBgQCf18PRZcm7hVbjOn9i
 BFpFMaECkVcf6YotgQuUKf6uGgF+/UOEl6rQXKcf1hYcSALViB6M9p5vd65FHq4e
@@ -156,7 +157,7 @@ func (p *FTDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Tar
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result using ServiceFTD struct with correct field names
+	// Create service result using ServiceFTD struct with only existing field names
 	serviceFTD := plugins.ServiceFTD{
 		// Vendor information (exact field names from types.go)
 		VendorName:        vendor.Name,
@@ -186,13 +187,8 @@ func (p *FTDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Tar
 		ThreatDefenseInfo:      finalDetection.ThreatDefenseInfo,
 		PolicyInfo:             finalDetection.PolicyInfo,
 
-		// Protocol information (exact field names from types.go)
-		StandardPorts:  []int{8305, 443, 8080, 8443},
-		Transport:      "TCP",
-		Encryption:     "TLS",
-		Authentication: finalDetection.AuthenticationMode,
-		ProtocolFamily: "Cisco_FTD",
-		ServiceType:    "Threat_Defense_Management",
+		// Network information (exact field names from types.go)
+		NetworkInfo: finalDetection.NetworkInfo,
 	}
 
 	service := plugins.CreateServiceFrom(target, serviceFTD, false, "", plugins.TCP)
@@ -232,6 +228,7 @@ func (p *FTDPlugin) performBasicFTDDetection(conn net.Conn, timeout time.Duratio
 		NetworkingFeatures:     []string{},
 		ThreatDefenseInfo:      make(map[string]interface{}),
 		PolicyInfo:             make(map[string]interface{}),
+		NetworkInfo:            make(map[string]interface{}),
 		TLSVersion:             p.getTLSVersionString(state.Version),
 		CipherSuite:            p.getCipherSuiteString(state.CipherSuite),
 	}
@@ -609,6 +606,16 @@ func (p *FTDPlugin) extractDetailedFTDInformation(fingerprint *FTDFingerprint) {
 		"qos_policies":            "traffic_prioritization",
 		"nat_policies":            "address_translation_rules",
 		"vpn_policies":            "encryption_authentication",
+	}
+
+	// Set network information
+	fingerprint.NetworkInfo = map[string]interface{}{
+		"interfaces":        "multiple_interfaces_supported",
+		"routing_protocols": []string{"Static", "OSPF", "EIGRP", "BGP", "RIP"},
+		"vlan_support":      "802.1Q_VLAN_support",
+		"qos_support":       "traffic_shaping_and_prioritization",
+		"multicast":         "multicast_routing_support",
+		"ipv6_support":      "dual_stack_ipv4_ipv6",
 	}
 
 	// Update protocol support
