@@ -74,15 +74,7 @@ const (
 	ProtoUnknown    = "unknown"
 
 	// ADDED
-	ProtoCCL         = "ccl"
-	ProtoCLE         = "checkpoint-log-exporter"
-	ProtoEMS         = "ems"
-	ProtoFAZD        = "fazd"
 	ProtoFGFMSD      = "fgfmsd"
-	ProtoFGHAS       = "fghas"
-	ProtoFTD         = "ftd"
-	ProtoLISP        = "lisp"
-	ProtoPXGRID      = "pxgrid"
 	ProtoRADIUS      = "radius"
 	ProtoZabbixAgent = "zabbix"
 	ProtoSIP         = "sip"
@@ -270,14 +262,6 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoFGHAS: //fghas
 		var p ServiceFGHAS
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoLISP:
-		var p ServiceLISP
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoPXGRID:
-		var p ServicePXGRID //pxgrid
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 	case ProtoRADIUS:
@@ -575,7 +559,8 @@ type ServiceKafka struct{}
 func (e ServiceKafka) Type() string { return ProtoKafka }
 
 type ServiceOracle struct {
-	Info string `json:"info"`
+	Info    string `json:"info"`
+	Product string `json:"product"`
 }
 
 func (e ServiceOracle) Type() string { return ProtoOracle }
@@ -663,40 +648,6 @@ type ServiceFGFMSD struct {
 	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
 }
 
-func (e ServicePXGRID) Type() string { return ProtoPXGRID }
-
-type ServicePXGRID struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-	Vulnerable        bool   `json:"vulnerable,omitempty"`
-
-	// Certificate information
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-	TLSVersion      string                 `json:"tlsVersion,omitempty"`
-	CipherSuite     string                 `json:"cipherSuite,omitempty"`
-	ServerName      string                 `json:"serverName,omitempty"`
-	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
-
-	// Protocol and service information
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	ServerModel        string   `json:"serverModel,omitempty"`
-
-	// Security capabilities and features
-	SecurityCapabilities []string               `json:"securityCapabilities,omitempty"`
-	IntegrationFeatures  []string               `json:"integrationFeatures,omitempty"`
-	SecurityInfo         map[string]interface{} `json:"securityInfo,omitempty"`
-
-	// Detection metadata
-	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
-}
-
 func (e ServiceRADIUS) Type() string { return ProtoRADIUS }
 
 type ServiceRADIUS struct {
@@ -760,40 +711,6 @@ type ServiceOpenVPN struct {
 
 func (e ServiceOpenVPN) Type() string { return ProtoOpenVPN }
 
-func (e ServiceLISP) Type() string { return ProtoLISP }
-
-type ServiceLISP struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-	Vulnerable        bool   `json:"vulnerable,omitempty"`
-
-	// Certificate information
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-	TLSVersion      string                 `json:"tlsVersion,omitempty"`
-	CipherSuite     string                 `json:"cipherSuite,omitempty"`
-	ServerName      string                 `json:"serverName,omitempty"`
-	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
-
-	// Protocol and service information
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	ServerModel        string   `json:"serverModel,omitempty"`
-
-	// LISP-specific capabilities and features
-	LISPCapabilities   []string               `json:"lispCapabilities,omitempty"`
-	NetworkingFeatures []string               `json:"networkingFeatures,omitempty"`
-	SecurityInfo       map[string]interface{} `json:"securityInfo,omitempty"`
-
-	// Detection metadata
-	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
-}
-
 func (e ServiceIPSEC) Type() string { return ProtoIPSEC }
 
 type ServiceIPSEC struct {
@@ -816,210 +733,6 @@ type ServiceIPSEC struct {
 	// Response analysis
 	ResponseLength int  `json:"responseLength,omitempty"`
 	HasVendorIDs   bool `json:"hasVendorIDs,omitempty"`
-}
-
-func (e ServiceFGHAS) Type() string { return ProtoFGHAS }
-
-type ServiceFGHAS struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-
-	// HA Sync fingerprint data
-	ResponseTimeMs     int64    `json:"responseTimeMs,omitempty"`
-	TLSVersion         string   `json:"tlsVersion,omitempty"`
-	CipherSuite        string   `json:"cipherSuite,omitempty"`
-	ServerName         string   `json:"serverName,omitempty"`
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	ServerModel        string   `json:"serverModel,omitempty"`
-
-	// HA-specific capabilities and features
-	HACapabilities  []string               `json:"haCapabilities,omitempty"`
-	ClusterInfo     map[string]interface{} `json:"clusterInfo,omitempty"`
-	SyncFeatures    []string               `json:"syncFeatures,omitempty"`
-	NetworkInfo     map[string]interface{} `json:"networkInfo,omitempty"`
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-
-	// Protocol information
-	StandardPorts  []int  `json:"standardPorts,omitempty"`
-	Transport      string `json:"transport,omitempty"`
-	Encryption     string `json:"encryption,omitempty"`
-	Authentication string `json:"authentication,omitempty"`
-	ProtocolFamily string `json:"protocolFamily,omitempty"`
-	ServiceType    string `json:"serviceType,omitempty"`
-}
-
-func (e ServiceFAZD) Type() string { return ProtoFAZD }
-
-type ServiceFAZD struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-
-	// FAZD fingerprint data
-	ResponseTimeMs     int64    `json:"responseTimeMs,omitempty"`
-	TLSVersion         string   `json:"tlsVersion,omitempty"`
-	CipherSuite        string   `json:"cipherSuite,omitempty"`
-	ServerName         string   `json:"serverName,omitempty"`
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	DeviceModel        string   `json:"deviceModel,omitempty"`
-
-	// FAZD-specific capabilities and features
-	LogCapabilities []string               `json:"logCapabilities,omitempty"`
-	StorageInfo     map[string]interface{} `json:"storageInfo,omitempty"`
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-
-	// Protocol information
-	StandardPorts  []int  `json:"standardPorts,omitempty"`
-	Transport      string `json:"transport,omitempty"`
-	Encryption     string `json:"encryption,omitempty"`
-	Authentication string `json:"authentication,omitempty"`
-	ProtocolFamily string `json:"protocolFamily,omitempty"`
-	ServiceType    string `json:"serviceType,omitempty"`
-}
-
-func (e ServiceEMS) Type() string { return ProtoEMS }
-
-type ServiceEMS struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-	Vulnerable        bool   `json:"vulnerable,omitempty"`
-
-	// Certificate information
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-	TLSVersion      string                 `json:"tlsVersion,omitempty"`
-	CipherSuite     string                 `json:"cipherSuite,omitempty"`
-	ServerName      string                 `json:"serverName,omitempty"`
-	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
-
-	// Protocol and service information
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	ServerModel        string   `json:"serverModel,omitempty"`
-
-	// EMS-specific capabilities and features
-	EndpointCapabilities []string               `json:"endpointCapabilities,omitempty"`
-	ComplianceFeatures   []string               `json:"complianceFeatures,omitempty"`
-	ManagementInfo       map[string]interface{} `json:"managementInfo,omitempty"`
-
-	// Detection metadata
-	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
-}
-
-func (e ServiceCLE) Type() string { return ProtoCLE }
-
-type ServiceCLE struct {
-	// Vendor information
-	VendorName       string `json:"vendorName,omitempty"`
-	VendorProduct    string `json:"vendorProduct,omitempty"`
-	VendorVersion    string `json:"vendorVersion,omitempty"`
-	VendorConfidence int    `json:"vendorConfidence,omitempty"`
-	VendorMethod     string `json:"vendorMethod,omitempty"`
-	Vulnerable       bool   `json:"vulnerable,omitempty"`
-
-	// Log Exporter fingerprint data
-	DetectionLevel     string                 `json:"detectionLevel,omitempty"`
-	AuthenticationMode string                 `json:"authenticationMode,omitempty"`
-	TLSInfo            map[string]interface{} `json:"tlsInfo,omitempty"`
-	CertificateInfo    map[string]interface{} `json:"certificateInfo,omitempty"`
-
-	// Log Exporter-specific capabilities and features
-	LoggingFeatures    []string               `json:"loggingFeatures,omitempty"`
-	ExportCapabilities []string               `json:"exportCapabilities,omitempty"`
-	SecurityInfo       map[string]interface{} `json:"securityInfo,omitempty"`
-}
-
-func (e ServiceCCL) Type() string { return ProtoCCL }
-
-type ServiceCCL struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-	Vulnerable        bool   `json:"vulnerable,omitempty"`
-
-	// Certificate information
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-	TLSVersion      string                 `json:"tlsVersion,omitempty"`
-	CipherSuite     string                 `json:"cipherSuite,omitempty"`
-	ServerName      string                 `json:"serverName,omitempty"`
-	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
-
-	// Protocol and service information
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	ServerModel        string   `json:"serverModel,omitempty"`
-
-	// Cluster capabilities and information
-	ClusterCapabilities []string               `json:"clusterCapabilities,omitempty"`
-	ClusterInfo         map[string]interface{} `json:"clusterInfo,omitempty"`
-
-	// Security features and network information
-	SecurityFeatures []string               `json:"securityFeatures,omitempty"`
-	NetworkInfo      map[string]interface{} `json:"networkInfo,omitempty"`
-
-	// Detection metadata
-	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
-}
-
-func (e ServiceFTD) Type() string { return ProtoFTD }
-
-type ServiceFTD struct {
-	// Vendor information
-	VendorName        string `json:"vendorName,omitempty"`
-	VendorProduct     string `json:"vendorProduct,omitempty"`
-	VendorVersion     string `json:"vendorVersion,omitempty"`
-	VendorConfidence  int    `json:"vendorConfidence,omitempty"`
-	VendorMethod      string `json:"vendorMethod,omitempty"`
-	VendorDescription string `json:"vendorDescription,omitempty"`
-
-	// Certificate information
-	CertificateInfo map[string]interface{} `json:"certificateInfo,omitempty"`
-	TLSVersion      string                 `json:"tlsVersion,omitempty"`
-	CipherSuite     string                 `json:"cipherSuite,omitempty"`
-	ServerName      string                 `json:"serverName,omitempty"`
-	ResponseTime    time.Duration          `json:"responseTime,omitempty"`
-
-	// Protocol and service information
-	ProtocolSupport    []string `json:"protocolSupport,omitempty"`
-	AuthenticationMode string   `json:"authenticationMode,omitempty"`
-	ServiceVersion     string   `json:"serviceVersion,omitempty"`
-	DeviceModel        string   `json:"deviceModel,omitempty"`
-
-	// FTD-specific management capabilities
-	ManagementCapabilities []string               `json:"managementCapabilities,omitempty"`
-	ThreatDefenseInfo      map[string]interface{} `json:"threatDefenseInfo,omitempty"`
-	PolicyInfo             map[string]interface{} `json:"policyInfo,omitempty"`
-
-	// Security and networking features
-	SecurityFeatures   []string               `json:"securityFeatures,omitempty"`
-	NetworkingFeatures []string               `json:"networkingFeatures,omitempty"`
-	NetworkInfo        map[string]interface{} `json:"networkInfo,omitempty"`
-
-	// Detection metadata
-	DetectionLevel string `json:"detectionLevel,omitempty"` // "basic" or "enhanced"
 }
 
 func (e ServiceZabbixAgent) Type() string { return ProtoZabbixAgent }

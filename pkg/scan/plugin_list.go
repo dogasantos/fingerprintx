@@ -59,15 +59,7 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/vnc"
 
 	//added
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ccl"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/checkpoint-log-exporter"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ems"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fazd"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fghas"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ftd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/ipsec"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/lisp"
-	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pxgrid"
 
 	//testados:
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"

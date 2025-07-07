@@ -215,7 +215,8 @@ func isOracleDBRunning(response []byte) bool {
 	return bytes.Index(response, beginPattern) > 0
 }
 
-func parseInfo(response []byte) map[string]any {
+// parseInfo extracts Oracle version information and creates both info map and product banner
+func parseInfo(response []byte) (map[string]any, string) {
 	refuseData := response[12:]
 	code := regexp.MustCompile(`[0-9]+`).FindAllStringSubmatch(string(refuseData), 2)
 	VSNNum := code[0][0]
@@ -224,7 +225,17 @@ func parseInfo(response []byte) map[string]any {
 	version := big.NewInt(int64(VsNum)).Bytes()
 	split := strconv.FormatInt(int64(version[1]), 16)
 	versionStr := fmt.Sprintf("%d.%c.%c.%d.%d", version[0], split[0], split[1], version[2], version[3])
-	return map[string]any{"Oracle TNS Listener Version": versionStr, "VSNNUM": VSNNum, "ERROR_CODE": ErrCode}
+
+	// Create the product banner in the format "oracle database_server X.X.X.X.X"
+	productBanner := fmt.Sprintf("oracle database_server %s", versionStr)
+
+	infoMap := map[string]any{
+		"Oracle TNS Listener Version": versionStr,
+		"VSNNUM":                      VSNNum,
+		"ERROR_CODE":                  ErrCode,
+	}
+
+	return infoMap, productBanner
 }
 
 func (p *ORACLEPlugin) PortPriority(port uint16) bool {
@@ -253,9 +264,11 @@ func (p *ORACLEPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 	}
 
 	if isOracleDBRunning(response) {
-		oracleInfo := fmt.Sprintf("%s", parseInfo(response))
+		infoMap, productBanner := parseInfo(response)
+		oracleInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceOracle{
-			Info: oracleInfo,
+			Info:    oracleInfo,
+			Product: productBanner,
 		}
 		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 	}
