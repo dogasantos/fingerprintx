@@ -41,7 +41,7 @@ type FGFMSDFingerprint struct {
 	DeviceModel        string
 	ManagementFeatures []string
 	SecurityInfo       map[string]interface{}
-	DetectionLevel     string // "basic", "tls", "plaintext", or "enhanced"
+	DetectionLevel     string // "basic", "tls", "plaintext", "enhanced", or "certificate"
 	Vulnerable         bool   // True if test certificate was accepted
 	TLSSupported       bool   // True if TLS is supported
 	PlaintextSupported bool   // True if plaintext protocol is supported
@@ -49,10 +49,35 @@ type FGFMSDFingerprint struct {
 
 var (
 	commonFGFMSDPorts = map[int]struct{}{
-		541:  {}, // Standard port for FortiManager FGFMSD
-		8890: {}, // Alternative management port
-		8013: {}, // Management sync port
-		443:  {}, // HTTPS port (alternative)
+		541: {}, // Standard port for FortiManager FGFMSD (primary)
+	}
+
+	// FGFM protocol magic number from Bishop Fox research
+	fgfmMagicNumber = []byte{0x36, 0xe0, 0x11, 0x00}
+
+	// FGFMSD-specific certificate patterns from FortiJump research
+	fgfmsdCertificatePatterns = []string{
+		"FGFMSD",
+		"FortiManager",
+		"FMG-",
+		"FM-",
+		"fgfmsd",
+		"fortimanager",
+		"Fortinet_Factory",
+		"root_Fortinet_Factory",
+	}
+
+	// FGFMSD-specific protocol patterns
+	fgfmsdProtocolPatterns = []string{
+		"get auth",
+		"serialno=",
+		"mgmtid=",
+		"platform=",
+		"fos_ver=",
+		"mgmtport=",
+		"keepalive_interval=",
+		"chan_window_sz=",
+		"sock_timeout=",
 	}
 
 	// FortiManager FGFMSD certificate for authentic communication
@@ -127,12 +152,12 @@ func init() {
 	plugins.RegisterPlugin(&FGFMSDPlugin{})
 }
 
-// Run performs FortiManager FGFMSD detection with multiple fallback methods
+// Run performs aggressive FortiManager FGFMSD detection with multiple fallback methods
 func (p *FGFMSDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	startTime := time.Now()
 
-	// Multi-method detection approach with fallbacks
-	fingerprint, err := p.performMultiMethodDetection(conn, timeout)
+	// Aggressive multi-method detection approach with fallbacks
+	fingerprint, err := p.performAggressiveDetection(conn, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -183,24 +208,34 @@ func (p *FGFMSDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 	return service, nil
 }
 
-// performMultiMethodDetection tries multiple detection methods with fallbacks
-func (p *FGFMSDPlugin) performMultiMethodDetection(conn net.Conn, timeout time.Duration) (*FGFMSDFingerprint, error) {
+// performAggressiveDetection tries multiple detection methods with aggressive fallbacks
+func (p *FGFMSDPlugin) performAggressiveDetection(conn net.Conn, timeout time.Duration) (*FGFMSDFingerprint, error) {
 	// Set connection timeout
 	conn.SetDeadline(time.Now().Add(timeout))
 	defer conn.SetDeadline(time.Time{})
 
-	// Method 1: Try TLS-based detection (most reliable if it works)
-	if fingerprint := p.tryTLSDetection(conn, timeout); fingerprint != nil {
+	// Method 1: Try FGFM protocol detection (highest confidence)
+	if fingerprint := p.tryFGFMProtocolDetection(conn, timeout); fingerprint != nil {
 		return fingerprint, nil
 	}
 
-	// Method 2: Try plaintext protocol detection
-	if fingerprint := p.tryPlaintextDetection(conn, timeout); fingerprint != nil {
+	// Method 2: Try TLS-based detection with FGFMSD patterns
+	if fingerprint := p.tryAggressiveTLSDetection(conn, timeout); fingerprint != nil {
 		return fingerprint, nil
 	}
 
-	// Method 3: Try port-based behavioral detection
-	if fingerprint := p.tryPortBasedDetection(conn, timeout); fingerprint != nil {
+	// Method 3: Try plaintext FGFMSD protocol detection
+	if fingerprint := p.tryAggressivePlaintextDetection(conn, timeout); fingerprint != nil {
+		return fingerprint, nil
+	}
+
+	// Method 4: FALLBACK - Certificate extraction and FGFMSD pattern matching
+	if fingerprint := p.tryFallbackCertificateDetection(conn, timeout); fingerprint != nil {
+		return fingerprint, nil
+	}
+
+	// Method 5: LAST RESORT - Port-based aggressive detection
+	if fingerprint := p.tryLastResortDetection(conn, timeout); fingerprint != nil {
 		return fingerprint, nil
 	}
 
@@ -208,20 +243,49 @@ func (p *FGFMSDPlugin) performMultiMethodDetection(conn net.Conn, timeout time.D
 	return nil, nil
 }
 
-// tryTLSDetection attempts TLS-based FGFMSD detection with proper error handling
-func (p *FGFMSDPlugin) tryTLSDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
-	// Create a new connection for TLS attempt to avoid corrupting the original
+// tryFGFMProtocolDetection attempts FGFM protocol detection using Bishop Fox patterns
+func (p *FGFMSDPlugin) tryFGFMProtocolDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
+	// Create a new connection for FGFM protocol attempt
 	remoteAddr := conn.RemoteAddr().String()
-	tlsTestConn, err := net.DialTimeout("tcp", remoteAddr, timeout/3)
+	fgfmConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
+	if err != nil {
+		return nil
+	}
+	defer fgfmConn.Close()
+
+	fgfmConn.SetDeadline(time.Now().Add(timeout / 5))
+
+	fingerprint := &FGFMSDFingerprint{
+		CertificateInfo:    make(map[string]interface{}),
+		ManagementFeatures: []string{},
+		SecurityInfo:       make(map[string]interface{}),
+		ProtocolSupport:    []string{},
+		DetectionLevel:     "enhanced",
+	}
+
+	// Try FGFM protocol with magic number (0x36e01100)
+	if p.testFGFMProtocol(fgfmConn, fingerprint) {
+		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FGFM_Protocol")
+		fingerprint.AuthenticationMode = "fgfm_protocol"
+		return fingerprint
+	}
+
+	return nil
+}
+
+// tryAggressiveTLSDetection attempts aggressive TLS-based FGFMSD detection
+func (p *FGFMSDPlugin) tryAggressiveTLSDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
+	// Create a new connection for TLS attempt
+	remoteAddr := conn.RemoteAddr().String()
+	tlsTestConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
 	if err != nil {
 		return nil
 	}
 	defer tlsTestConn.Close()
 
-	// Set shorter timeout for TLS attempt
-	tlsTestConn.SetDeadline(time.Now().Add(timeout / 3))
+	tlsTestConn.SetDeadline(time.Now().Add(timeout / 5))
 
-	// Try TLS handshake with proper error handling
+	// Try TLS handshake with aggressive error handling
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         "",
@@ -230,12 +294,12 @@ func (p *FGFMSDPlugin) tryTLSDetection(conn net.Conn, timeout time.Duration) *FG
 	tlsConn := tls.Client(tlsTestConn, tlsConfig)
 	err = tlsConn.Handshake()
 	if err != nil {
-		// TLS failed - this is normal for many services
-		return nil
+		// TLS failed - try to extract certificate anyway
+		return p.tryFallbackCertificateDetection(conn, timeout)
 	}
 
-	// TLS succeeded - analyze certificate
-	fingerprint := p.analyzeTLSConnection(tlsConn)
+	// TLS succeeded - analyze certificate aggressively
+	fingerprint := p.analyzeAggressiveTLSConnection(tlsConn)
 	if fingerprint != nil {
 		fingerprint.TLSSupported = true
 		fingerprint.DetectionLevel = "tls"
@@ -251,19 +315,18 @@ func (p *FGFMSDPlugin) tryTLSDetection(conn net.Conn, timeout time.Duration) *FG
 	return nil
 }
 
-// tryPlaintextDetection attempts plaintext FGFMSD protocol detection
-func (p *FGFMSDPlugin) tryPlaintextDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
+// tryAggressivePlaintextDetection attempts aggressive plaintext FGFMSD protocol detection
+func (p *FGFMSDPlugin) tryAggressivePlaintextDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
 	// Create a new connection for plaintext attempt
 	remoteAddr := conn.RemoteAddr().String()
-	plaintextConn, err := net.DialTimeout("tcp", remoteAddr, timeout/3)
+	plaintextConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
 	if err != nil {
 		return nil
 	}
 	defer plaintextConn.Close()
 
-	plaintextConn.SetDeadline(time.Now().Add(timeout / 3))
+	plaintextConn.SetDeadline(time.Now().Add(timeout / 5))
 
-	// Try FGFMSD plaintext protocol probes
 	fingerprint := &FGFMSDFingerprint{
 		CertificateInfo:    make(map[string]interface{}),
 		ManagementFeatures: []string{},
@@ -275,23 +338,24 @@ func (p *FGFMSDPlugin) tryPlaintextDetection(conn net.Conn, timeout time.Duratio
 
 	confidence := 0
 
-	// Test 1: FGFMSD magic bytes
-	if p.testFGFMSDMagicBytes(plaintextConn, fingerprint) {
+	// Test 1: FGFM protocol patterns from Bishop Fox research
+	if p.testFGFMProtocolPatterns(plaintextConn, fingerprint) {
+		confidence += 50
+	}
+
+	// Test 2: FGFMSD-specific magic bytes and patterns
+	if p.testFGFMSDSpecificPatterns(plaintextConn, fingerprint) {
 		confidence += 40
 	}
 
-	// Test 2: FortiManager protocol probes
-	if p.testFortiManagerProtocol(plaintextConn, fingerprint) {
+	// Test 3: FortiManager authentication patterns
+	if p.testFortiManagerAuthPatterns(plaintextConn, fingerprint) {
 		confidence += 35
 	}
 
-	// Test 3: Management protocol patterns
-	if p.testManagementProtocol(plaintextConn, fingerprint) {
-		confidence += 25
-	}
-
-	if confidence >= 60 {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Plaintext_FGFMSD")
+	// Aggressive threshold - lower than normal
+	if confidence >= 40 {
+		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Aggressive_Plaintext_FGFMSD")
 		fingerprint.AuthenticationMode = "plaintext_protocol"
 		return fingerprint
 	}
@@ -299,9 +363,67 @@ func (p *FGFMSDPlugin) tryPlaintextDetection(conn net.Conn, timeout time.Duratio
 	return nil
 }
 
-// tryPortBasedDetection attempts detection based on port behavior and patterns
-func (p *FGFMSDPlugin) tryPortBasedDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
-	// Only try port-based detection on known FGFMSD ports
+// tryFallbackCertificateDetection - FALLBACK method to extract certificate and match FGFMSD patterns
+func (p *FGFMSDPlugin) tryFallbackCertificateDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
+	// Create a new connection for certificate extraction
+	remoteAddr := conn.RemoteAddr().String()
+	certConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
+	if err != nil {
+		return nil
+	}
+	defer certConn.Close()
+
+	certConn.SetDeadline(time.Now().Add(timeout / 5))
+
+	// Try to extract certificate even if TLS handshake fails
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "",
+	}
+
+	tlsConn := tls.Client(certConn, tlsConfig)
+
+	// Try handshake but don't fail if it doesn't work
+	_ = tlsConn.Handshake()
+
+	// Try to get connection state even if handshake failed
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return nil
+	}
+
+	serverCert := state.PeerCertificates[0]
+	fingerprint := &FGFMSDFingerprint{
+		CertificateInfo:    make(map[string]interface{}),
+		ManagementFeatures: []string{},
+		SecurityInfo:       make(map[string]interface{}),
+		ProtocolSupport:    []string{"Certificate_Extraction"},
+		DetectionLevel:     "certificate",
+		TLSSupported:       true,
+	}
+
+	// Extract certificate information
+	fingerprint.CertificateInfo["subject"] = serverCert.Subject.String()
+	fingerprint.CertificateInfo["issuer"] = serverCert.Issuer.String()
+	fingerprint.CertificateInfo["serial_number"] = serverCert.SerialNumber.String()
+	fingerprint.CertificateInfo["not_before"] = serverCert.NotBefore
+	fingerprint.CertificateInfo["not_after"] = serverCert.NotAfter
+
+	// AGGRESSIVE FGFMSD pattern matching in certificate
+	confidence := p.aggressiveCertificatePatternMatching(serverCert, fingerprint)
+
+	// Lower threshold for fallback detection
+	if confidence >= 30 {
+		fingerprint.AuthenticationMode = "certificate_fallback"
+		return fingerprint
+	}
+
+	return nil
+}
+
+// tryLastResortDetection - LAST RESORT aggressive detection
+func (p *FGFMSDPlugin) tryLastResortDetection(conn net.Conn, timeout time.Duration) *FGFMSDFingerprint {
+	// Only try last resort on known FGFMSD ports
 	remoteAddr := conn.RemoteAddr().String()
 	port := p.extractPortFromAddress(remoteAddr)
 
@@ -309,14 +431,14 @@ func (p *FGFMSDPlugin) tryPortBasedDetection(conn net.Conn, timeout time.Duratio
 		return nil
 	}
 
-	// Create a new connection for port-based testing
-	portTestConn, err := net.DialTimeout("tcp", remoteAddr, timeout/3)
+	// Create a new connection for last resort testing
+	lastResortConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
 	if err != nil {
 		return nil
 	}
-	defer portTestConn.Close()
+	defer lastResortConn.Close()
 
-	portTestConn.SetDeadline(time.Now().Add(timeout / 3))
+	lastResortConn.SetDeadline(time.Now().Add(timeout / 5))
 
 	fingerprint := &FGFMSDFingerprint{
 		CertificateInfo:    make(map[string]interface{}),
@@ -328,25 +450,24 @@ func (p *FGFMSDPlugin) tryPortBasedDetection(conn net.Conn, timeout time.Duratio
 
 	confidence := 0
 
-	// Test connection behavior patterns
-	if p.testConnectionBehavior(portTestConn, fingerprint) {
-		confidence += 30
-	}
-
-	// Test for management service patterns
-	if p.testManagementServicePatterns(portTestConn, fingerprint) {
+	// Test aggressive connection behavior patterns
+	if p.testAggressiveConnectionBehavior(lastResortConn, fingerprint) {
 		confidence += 25
 	}
 
-	// Port-specific confidence boost
-	if port == 541 {
-		confidence += 20 // Standard FGFMSD port
-	} else if port == 8890 || port == 8013 {
-		confidence += 15 // Alternative management ports
+	// Test for any management service patterns
+	if p.testAnyManagementServicePatterns(lastResortConn, fingerprint) {
+		confidence += 20
 	}
 
-	if confidence >= 50 {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Port_Based_Detection")
+	// Port-specific confidence boost (aggressive)
+	if port == 541 {
+		confidence += 30 // Standard FGFMSD port gets highest boost
+	}
+
+	// Very low threshold for last resort
+	if confidence >= 35 {
+		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Last_Resort_Detection")
 		fingerprint.AuthenticationMode = "unknown"
 		return fingerprint
 	}
@@ -354,8 +475,180 @@ func (p *FGFMSDPlugin) tryPortBasedDetection(conn net.Conn, timeout time.Duratio
 	return nil
 }
 
-// analyzeTLSConnection analyzes a successful TLS connection for FGFMSD patterns
-func (p *FGFMSDPlugin) analyzeTLSConnection(tlsConn *tls.Conn) *FGFMSDFingerprint {
+// testFGFMProtocol tests for FGFM protocol using Bishop Fox research patterns
+func (p *FGFMSDPlugin) testFGFMProtocol(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	// Create FGFM "get auth" request based on Bishop Fox research
+	request := p.createFGFMAuthRequest()
+
+	conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	_, err := conn.Write(request)
+	if err != nil {
+		return false
+	}
+
+	// Read response
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	response := make([]byte, 4096)
+	n, err := conn.Read(response)
+
+	if err != nil {
+		return false
+	}
+
+	// Analyze response for FGFM patterns
+	responseStr := string(response[:n])
+
+	// Check for FGFM response patterns from Bishop Fox research
+	fgfmPatterns := []string{
+		"request=auth",
+		"serialno=",
+		"mgmtid=",
+		"keepalive_interval=",
+		"chan_window_sz=",
+		"sock_timeout=",
+		"FMG-VM",
+	}
+
+	patternMatches := 0
+	for _, pattern := range fgfmPatterns {
+		if strings.Contains(responseStr, pattern) {
+			patternMatches++
+		}
+	}
+
+	if patternMatches >= 3 {
+		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FGFM_Auth_Response")
+		return true
+	}
+
+	return false
+}
+
+// createFGFMAuthRequest creates FGFM auth request based on Bishop Fox research
+func (p *FGFMSDPlugin) createFGFMAuthRequest() []byte {
+	// FGFM message format: magic number (4 bytes) + size (4 bytes) + data
+	request := "get auth\r\n" +
+		"serialno=FGTTEST000000000\r\n" +
+		"mgmtid=00000000-0000-0000-0000-000000000000\r\n" +
+		"platform=FortiGate-Test\r\n" +
+		"fos_ver=700\r\n" +
+		"mgmtport=443\r\n" +
+		"\r\n\x00"
+
+	// Create FGFM packet with magic number 0x36e01100
+	var packet bytes.Buffer
+	packet.Write(fgfmMagicNumber)                                   // Magic number
+	binary.Write(&packet, binary.BigEndian, uint32(len(request)+8)) // Size including header
+	packet.WriteString(request)                                     // Data
+
+	return packet.Bytes()
+}
+
+// testFGFMProtocolPatterns tests for FGFM protocol patterns
+func (p *FGFMSDPlugin) testFGFMProtocolPatterns(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	patterns := []string{
+		"get auth\r\n",
+		"serialno=TEST\r\n",
+		"mgmtid=test\r\n",
+		"platform=FortiGate\r\n",
+	}
+
+	for _, pattern := range patterns {
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, err := conn.Write([]byte(pattern))
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		response := make([]byte, 1024)
+		n, err := conn.Read(response)
+
+		if err == nil && n > 0 {
+			responseStr := string(response[:n])
+			for _, fgfmPattern := range fgfmsdProtocolPatterns {
+				if strings.Contains(responseStr, fgfmPattern) {
+					fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FGFM_Protocol_Pattern")
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// testFGFMSDSpecificPatterns tests for FGFMSD-specific patterns
+func (p *FGFMSDPlugin) testFGFMSDSpecificPatterns(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	// FGFMSD-specific test patterns
+	patterns := [][]byte{
+		[]byte("FGFMSD\r\n"),
+		[]byte("FortiManager\r\n"),
+		[]byte("FMG-\r\n"),
+		fgfmMagicNumber,
+	}
+
+	for _, pattern := range patterns {
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, err := conn.Write(pattern)
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		response := make([]byte, 1024)
+		n, err := conn.Read(response)
+
+		if err == nil && n > 0 {
+			responseStr := strings.ToUpper(string(response[:n]))
+			if strings.Contains(responseStr, "FGFMSD") ||
+				strings.Contains(responseStr, "FORTIMANAGER") ||
+				strings.Contains(responseStr, "FMG-") {
+				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FGFMSD_Specific_Pattern")
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// testFortiManagerAuthPatterns tests for FortiManager authentication patterns
+func (p *FGFMSDPlugin) testFortiManagerAuthPatterns(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	authPatterns := []string{
+		"AUTH\r\n",
+		"LOGIN\r\n",
+		"MGMT\r\n",
+		"CERT\r\n",
+	}
+
+	for _, pattern := range authPatterns {
+		conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, err := conn.Write([]byte(pattern))
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		response := make([]byte, 512)
+		n, err := conn.Read(response)
+
+		if err == nil && n > 0 {
+			responseStr := strings.ToUpper(string(response[:n]))
+			if strings.Contains(responseStr, "FORTINET") ||
+				strings.Contains(responseStr, "FORTIMANAGER") ||
+				strings.Contains(responseStr, "CERTIFICATE") {
+				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FortiManager_Auth_Pattern")
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// analyzeAggressiveTLSConnection analyzes TLS connection with aggressive FGFMSD pattern matching
+func (p *FGFMSDPlugin) analyzeAggressiveTLSConnection(tlsConn *tls.Conn) *FGFMSDFingerprint {
 	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
 		return nil
@@ -380,27 +673,191 @@ func (p *FGFMSDPlugin) analyzeTLSConnection(tlsConn *tls.Conn) *FGFMSDFingerprin
 	fingerprint.CertificateInfo["not_before"] = serverCert.NotBefore
 	fingerprint.CertificateInfo["not_after"] = serverCert.NotAfter
 
-	// Analyze certificate for FGFMSD patterns
-	confidence := p.analyzeCertificateForFGFMSD(serverCert, fingerprint)
+	// Aggressive certificate analysis for FGFMSD patterns
+	confidence := p.aggressiveCertificatePatternMatching(serverCert, fingerprint)
 
 	// Analyze TLS characteristics
 	confidence += p.analyzeTLSForFortinet(state, fingerprint)
 
-	// Try protocol probing over TLS
-	confidence += p.performTLSProtocolProbing(tlsConn, fingerprint)
+	// Try aggressive protocol probing over TLS
+	confidence += p.performAggressiveTLSProtocolProbing(tlsConn, fingerprint)
 
-	if confidence >= 60 {
-		fingerprint.AuthenticationMode = "tls_certificate"
+	// Lower threshold for aggressive detection
+	if confidence >= 40 {
+		fingerprint.AuthenticationMode = "aggressive_tls_certificate"
 		return fingerprint
 	}
 
 	return nil
 }
 
+// aggressiveCertificatePatternMatching performs aggressive FGFMSD pattern matching in certificates
+func (p *FGFMSDPlugin) aggressiveCertificatePatternMatching(cert *x509.Certificate, fingerprint *FGFMSDFingerprint) int {
+	confidence := 0
+
+	// Check all certificate fields for FGFMSD patterns
+	certText := strings.ToUpper(cert.Subject.String() + " " + cert.Issuer.String())
+
+	for _, pattern := range fgfmsdCertificatePatterns {
+		if strings.Contains(certText, strings.ToUpper(pattern)) {
+			confidence += 15
+			fingerprint.ServerName = cert.Subject.CommonName
+
+			// Higher confidence for more specific patterns
+			if strings.Contains(pattern, "FGFMSD") {
+				confidence += 20 // Extra points for exact FGFMSD match
+			} else if strings.Contains(pattern, "FortiManager") {
+				confidence += 15 // Extra points for FortiManager
+			} else if strings.Contains(pattern, "FM-") || strings.Contains(pattern, "FMG-") {
+				confidence += 10 // Extra points for FortiManager prefixes
+			}
+		}
+	}
+
+	// Check Subject Alternative Names aggressively
+	for _, san := range cert.DNSNames {
+		sanUpper := strings.ToUpper(san)
+		for _, pattern := range fgfmsdCertificatePatterns {
+			if strings.Contains(sanUpper, strings.ToUpper(pattern)) {
+				confidence += 10
+			}
+		}
+	}
+
+	// Check email addresses in certificate
+	for _, email := range cert.EmailAddresses {
+		emailUpper := strings.ToUpper(email)
+		if strings.Contains(emailUpper, "FORTINET") ||
+			strings.Contains(emailUpper, "FORTIMANAGER") {
+			confidence += 10
+		}
+	}
+
+	return confidence
+}
+
+// performAggressiveTLSProtocolProbing performs aggressive protocol probing over TLS
+func (p *FGFMSDPlugin) performAggressiveTLSProtocolProbing(tlsConn *tls.Conn, fingerprint *FGFMSDFingerprint) int {
+	confidence := 0
+
+	// Try multiple FGFMSD-specific probes
+	probes := [][]byte{
+		[]byte("FGFMSD\r\n"),
+		[]byte("get auth\r\n"),
+		[]byte("FortiManager\r\n"),
+		fgfmMagicNumber,
+		p.createFGFMAuthRequest(),
+	}
+
+	for _, probe := range probes {
+		tlsConn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, err := tlsConn.Write(probe)
+		if err != nil {
+			continue
+		}
+
+		tlsConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		response := make([]byte, 1024)
+		n, err := tlsConn.Read(response)
+
+		if err == nil && n > 0 {
+			responseStr := strings.ToUpper(string(response[:n]))
+			if strings.Contains(responseStr, "FGFMSD") ||
+				strings.Contains(responseStr, "FORTIMANAGER") ||
+				strings.Contains(responseStr, "FORTINET") {
+				confidence += 20
+			}
+		} else if err != nil {
+			// Analyze error patterns for FGFMSD-specific rejections
+			errStr := strings.ToUpper(err.Error())
+			if strings.Contains(errStr, "CERTIFICATE") ||
+				strings.Contains(errStr, "AUTHENTICATION") {
+				confidence += 15 // FGFMSD requires certificates
+			}
+		}
+	}
+
+	return confidence
+}
+
+// testAggressiveConnectionBehavior tests aggressive connection behavior patterns
+func (p *FGFMSDPlugin) testAggressiveConnectionBehavior(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	// Test multiple connection patterns aggressively
+	testPatterns := [][]byte{
+		[]byte("TEST\r\n"),
+		[]byte("HELLO\r\n"),
+		[]byte("STATUS\r\n"),
+		[]byte("INFO\r\n"),
+		[]byte("\r\n"),
+		[]byte{0x00, 0x01, 0x02, 0x03},
+	}
+
+	responses := 0
+	for _, pattern := range testPatterns {
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		_, err := conn.Write(pattern)
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		response := make([]byte, 256)
+		n, err := conn.Read(response)
+
+		if err == nil && n > 0 {
+			responses++
+		}
+	}
+
+	// If service responds to multiple patterns, could be management service
+	if responses >= 2 {
+		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Aggressive_Connection_Behavior")
+		return true
+	}
+
+	return false
+}
+
+// testAnyManagementServicePatterns tests for any management service patterns
+func (p *FGFMSDPlugin) testAnyManagementServicePatterns(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
+	// Test for any management-like patterns
+	patterns := [][]byte{
+		[]byte("GET /\r\n"),
+		[]byte("OPTIONS /\r\n"),
+		[]byte("HEAD /\r\n"),
+		[]byte("MGMT\r\n"),
+		[]byte("ADMIN\r\n"),
+	}
+
+	for _, pattern := range patterns {
+		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+		_, err := conn.Write(pattern)
+		if err != nil {
+			continue
+		}
+
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+		response := make([]byte, 512)
+		n, err := conn.Read(response)
+
+		if err == nil && n > 0 {
+			responseStr := strings.ToUpper(string(response[:n]))
+			if strings.Contains(responseStr, "HTTP") ||
+				strings.Contains(responseStr, "SERVER") ||
+				strings.Contains(responseStr, "MANAGEMENT") {
+				fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Management_Service_Pattern")
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 // tryEnhancedTLSDetection attempts enhanced detection with client certificate
 func (p *FGFMSDPlugin) tryEnhancedTLSDetection(remoteAddr string, timeout time.Duration, basicFingerprint *FGFMSDFingerprint) *FGFMSDFingerprint {
 	// Create new connection for enhanced attempt
-	enhancedConn, err := net.DialTimeout("tcp", remoteAddr, timeout/3)
+	enhancedConn, err := net.DialTimeout("tcp", remoteAddr, timeout/5)
 	if err != nil {
 		return nil
 	}
@@ -449,155 +906,6 @@ func (p *FGFMSDPlugin) tryEnhancedTLSDetection(remoteAddr string, timeout time.D
 	return &enhanced
 }
 
-// testFGFMSDMagicBytes tests for FGFMSD magic bytes in plaintext
-func (p *FGFMSDPlugin) testFGFMSDMagicBytes(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
-	// Send FGFMSD magic bytes
-	magicBytes := []byte{0x46, 0x47, 0x46, 0x4D, 0x53, 0x44, 0x50, 0x52} // "FGFMSDPR"
-
-	conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	_, err := conn.Write(magicBytes)
-	if err != nil {
-		return false
-	}
-
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-
-	if err != nil {
-		return false
-	}
-
-	// Analyze response for FGFMSD patterns
-	responseStr := string(response[:n])
-	if strings.Contains(strings.ToUpper(responseStr), "FGFMSD") ||
-		strings.Contains(strings.ToUpper(responseStr), "FORTIMANAGER") {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FGFMSD_Magic_Bytes")
-		return true
-	}
-
-	return false
-}
-
-// testFortiManagerProtocol tests for FortiManager protocol patterns
-func (p *FGFMSDPlugin) testFortiManagerProtocol(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
-	// Send FortiManager protocol probe
-	probe := []byte("FMGR_PROBE\r\n")
-
-	conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	_, err := conn.Write(probe)
-	if err != nil {
-		return false
-	}
-
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-
-	if err != nil {
-		return false
-	}
-
-	// Analyze response
-	responseStr := string(response[:n])
-	if strings.Contains(strings.ToUpper(responseStr), "FORTINET") ||
-		strings.Contains(strings.ToUpper(responseStr), "FORTIMANAGER") {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "FortiManager_Protocol")
-		return true
-	}
-
-	return false
-}
-
-// testManagementProtocol tests for general management protocol patterns
-func (p *FGFMSDPlugin) testManagementProtocol(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
-	// Send management protocol probe
-	probe := []byte("GET /api/v1/status HTTP/1.1\r\nHost: test\r\n\r\n")
-
-	conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
-	_, err := conn.Write(probe)
-	if err != nil {
-		return false
-	}
-
-	// Read response
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	response := make([]byte, 1024)
-	n, err := conn.Read(response)
-
-	if err != nil {
-		return false
-	}
-
-	// Analyze response for management patterns
-	responseStr := string(response[:n])
-	if strings.Contains(strings.ToUpper(responseStr), "MANAGEMENT") ||
-		strings.Contains(strings.ToUpper(responseStr), "API") {
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Management_API")
-		return true
-	}
-
-	return false
-}
-
-// testConnectionBehavior tests connection behavior patterns
-func (p *FGFMSDPlugin) testConnectionBehavior(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
-	// Test connection stability and response patterns
-	testData := []byte("TEST\r\n")
-
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, err := conn.Write(testData)
-	if err != nil {
-		return false
-	}
-
-	// Check if connection stays open (management services typically do)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	response := make([]byte, 512)
-	_, err = conn.Read(response)
-
-	// Connection behavior analysis
-	if err != nil {
-		// Connection closed or timeout - could be management service
-		fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Management_Behavior")
-		return true
-	}
-
-	return false
-}
-
-// testManagementServicePatterns tests for management service patterns
-func (p *FGFMSDPlugin) testManagementServicePatterns(conn net.Conn, fingerprint *FGFMSDFingerprint) bool {
-	// Test for management service response patterns
-	patterns := [][]byte{
-		[]byte("STATUS\r\n"),
-		[]byte("VERSION\r\n"),
-		[]byte("INFO\r\n"),
-	}
-
-	for _, pattern := range patterns {
-		conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-		_, err := conn.Write(pattern)
-		if err != nil {
-			continue
-		}
-
-		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-		response := make([]byte, 256)
-		n, err := conn.Read(response)
-
-		if err == nil && n > 0 {
-			// Got a response - could be management service
-			fingerprint.ProtocolSupport = append(fingerprint.ProtocolSupport, "Management_Commands")
-			return true
-		}
-	}
-
-	return false
-}
-
 // extractPortFromAddress extracts port number from network address
 func (p *FGFMSDPlugin) extractPortFromAddress(addr string) int {
 	parts := strings.Split(addr, ":")
@@ -609,57 +917,6 @@ func (p *FGFMSDPlugin) extractPortFromAddress(addr string) int {
 	port := 0
 	fmt.Sscanf(portStr, "%d", &port)
 	return port
-}
-
-// analyzeCertificateForFGFMSD analyzes server certificate for FortiManager FGFMSD-specific patterns
-func (p *FGFMSDPlugin) analyzeCertificateForFGFMSD(cert *x509.Certificate, fingerprint *FGFMSDFingerprint) int {
-	confidence := 0
-
-	// Check Common Name for FortiManager FGFMSD patterns
-	cn := cert.Subject.CommonName
-	if strings.Contains(strings.ToUpper(cn), "FM-") {
-		confidence += 40
-		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "FORTIMANAGER") {
-		confidence += 35
-		fingerprint.ServerName = cn
-	} else if strings.Contains(strings.ToUpper(cn), "FORTINET") {
-		confidence += 25
-		fingerprint.ServerName = cn
-	}
-
-	// Check Organizational Unit for FGFMSD patterns
-	for _, ou := range cert.Subject.OrganizationalUnit {
-		if strings.Contains(strings.ToUpper(ou), "FGFMSD SERVICE") {
-			confidence += 35
-		} else if strings.Contains(strings.ToUpper(ou), "FORTIMANAGER") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(ou), "MANAGEMENT") {
-			confidence += 25
-		}
-	}
-
-	// Check Organization for Fortinet
-	for _, org := range cert.Subject.Organization {
-		if strings.Contains(strings.ToUpper(org), "FORTINET") {
-			confidence += 30
-		}
-	}
-
-	// Check Issuer for Fortinet patterns
-	issuer := cert.Issuer.String()
-	if strings.Contains(strings.ToUpper(issuer), "FORTINET") {
-		confidence += 25
-	}
-
-	// Check Subject Alternative Names
-	for _, san := range cert.DNSNames {
-		if strings.Contains(strings.ToUpper(san), "FM-") || strings.Contains(strings.ToUpper(san), "FORTIMANAGER") {
-			confidence += 15
-		}
-	}
-
-	return confidence
 }
 
 // analyzeTLSForFortinet analyzes TLS characteristics for Fortinet patterns
@@ -684,46 +941,6 @@ func (p *FGFMSDPlugin) analyzeTLSForFortinet(state tls.ConnectionState, fingerpr
 		confidence += 15
 	} else if state.Version == tls.VersionTLS11 {
 		confidence += 10
-	}
-
-	return confidence
-}
-
-// performTLSProtocolProbing sends FGFMSD protocol probes over TLS
-func (p *FGFMSDPlugin) performTLSProtocolProbing(tlsConn *tls.Conn, fingerprint *FGFMSDFingerprint) int {
-	confidence := 0
-
-	// Send FGFMSD magic bytes probe over TLS
-	fgfmsdProbe := []byte{0x46, 0x47, 0x46, 0x4D, 0x53, 0x44, 0x50, 0x52} // "FGFMSDPR"
-
-	tlsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	_, err := tlsConn.Write(fgfmsdProbe)
-	if err != nil {
-		return confidence
-	}
-
-	// Try to read response
-	tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	response := make([]byte, 1024)
-	n, err := tlsConn.Read(response)
-
-	if err != nil {
-		// Analyze error patterns for FGFMSD-specific rejections
-		if strings.Contains(err.Error(), "certificate") {
-			confidence += 30 // FGFMSD requires certificates
-		} else if strings.Contains(err.Error(), "authentication") {
-			confidence += 25
-		}
-	} else if n > 0 {
-		// Analyze response for FGFMSD patterns
-		responseStr := string(response[:n])
-		if strings.Contains(strings.ToUpper(responseStr), "FORTIMANAGER") {
-			confidence += 35
-		} else if strings.Contains(strings.ToUpper(responseStr), "FORTINET") {
-			confidence += 30
-		} else if strings.Contains(strings.ToUpper(responseStr), "FGFMSD") {
-			confidence += 25
-		}
 	}
 
 	return confidence
@@ -886,8 +1103,8 @@ func (p *FGFMSDPlugin) createVendorInfo(fingerprint *FGFMSDFingerprint) VendorIn
 	switch fingerprint.DetectionLevel {
 	case "enhanced":
 		vendor.Confidence = 100
-		vendor.Method = "Certificate-based FGFMSD Protocol Communication"
-		vendor.Description = "Full FGFMSD protocol access with detailed management information"
+		vendor.Method = "FGFM Protocol Communication"
+		vendor.Description = "Full FGFM protocol access with detailed management information"
 		if fingerprint.DeviceModel != "" {
 			vendor.Product = fingerprint.DeviceModel + " FGFMSD"
 		}
@@ -896,23 +1113,27 @@ func (p *FGFMSDPlugin) createVendorInfo(fingerprint *FGFMSDFingerprint) VendorIn
 		}
 	case "tls":
 		vendor.Confidence = 85
-		vendor.Method = "TLS Certificate and Protocol Analysis"
-		vendor.Description = "FGFMSD service detected via TLS certificate analysis and protocol patterns"
+		vendor.Method = "Aggressive TLS Certificate and Protocol Analysis"
+		vendor.Description = "FGFMSD service detected via aggressive TLS certificate analysis and protocol patterns"
 		if fingerprint.ServerName != "" {
 			vendor.Product = fingerprint.ServerName
 		}
 	case "plaintext":
 		vendor.Confidence = 75
-		vendor.Method = "Plaintext Protocol Detection"
-		vendor.Description = "FGFMSD service detected via plaintext protocol analysis"
+		vendor.Method = "Aggressive Plaintext Protocol Detection"
+		vendor.Description = "FGFMSD service detected via aggressive plaintext protocol analysis"
+	case "certificate":
+		vendor.Confidence = 65
+		vendor.Method = "Fallback Certificate Pattern Matching"
+		vendor.Description = "FGFMSD service detected via fallback certificate pattern matching"
 	case "basic":
-		vendor.Confidence = 60
-		vendor.Method = "Port-based Behavioral Analysis"
-		vendor.Description = "Potential FGFMSD service detected via port behavior analysis"
+		vendor.Confidence = 55
+		vendor.Method = "Aggressive Port-based Behavioral Analysis"
+		vendor.Description = "Potential FGFMSD service detected via aggressive port behavior analysis"
 	default:
 		vendor.Confidence = 50
-		vendor.Method = "Basic Detection"
-		vendor.Description = "FGFMSD service detected via basic analysis"
+		vendor.Method = "Aggressive Detection"
+		vendor.Description = "FGFMSD service detected via aggressive analysis"
 	}
 
 	return vendor
