@@ -2,6 +2,7 @@ package radius
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -10,17 +11,15 @@ import (
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
 )
 
-const RADIUS = "radius"
-
-// RADIUSPlugin implements the RADIUS detection plugin
 type RADIUSPlugin struct{}
+
+const RADIUS = "radius"
 
 // VendorInfo represents detected RADIUS vendor information
 type VendorInfo struct {
 	Name        string
 	Product     string
 	Version     string
-	ID          uint32
 	Confidence  int    // 1-100, higher is more confident
 	Method      string // How it was detected
 	Description string
@@ -28,43 +27,39 @@ type VendorInfo struct {
 
 // RADIUSFingerprint represents collected RADIUS fingerprinting data
 type RADIUSFingerprint struct {
+	VendorSpecificAttributes []plugins.VSAInfo // Use plugins.VSAInfo type
+	ResponseCode             uint8
+	ResponseTime             time.Duration
+	Attributes               map[uint8][]byte
+	VendorConfidence         map[string]int
+	DetectedVendors          []string
+	AuthenticationMethods    []string
+	SupportedPorts           []int
 	AttributeCount           int
 	AttributeTypes           []uint8
-	VendorSpecificAttributes []VSAInfo
-	StandardPorts            []int
-	LegacyPorts              []int
-	Transport                string
-}
-
-// VSAInfo represents Vendor-Specific Attribute information
-type VSAInfo struct {
-	VendorID   uint32
-	VendorName string
-	VendorType uint8
-	DataLength int
+	VendorID                 uint32
 }
 
 var (
 	commonRADIUSPorts = map[int]struct{}{
-		1812: {}, // RADIUS Authentication
-		1813: {}, // RADIUS Accounting
-		1645: {}, // Legacy RADIUS Authentication
-		1646: {}, // Legacy RADIUS Accounting
+		1812: {}, // Authentication
+		1813: {}, // Accounting
+		1645: {}, // Legacy Authentication
+		1646: {}, // Legacy Accounting
 	}
 
 	// Known RADIUS vendor IDs
 	vendorIDs = map[uint32]string{
 		9:     "Cisco",
 		311:   "Microsoft",
+		12356: "Fortinet",
+		14823: "Aruba",
+		3076:  "Alcatel-Lucent",
 		2636:  "Juniper",
-		3076:  "Alteon",
-		5842:  "Quintum",
-		8164:  "Starent",
-		10415: "Nokia",
-		14179: "Airespace",
 		25506: "H3C",
-		26895: "Fortinet",
-		35265: "Aruba",
+		2011:  "Huawei",
+		10415: "Nokia",
+		35265: "Ruckus",
 	}
 )
 
@@ -74,9 +69,7 @@ func init() {
 
 // Run performs RADIUS detection
 func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// Set connection timeout
-	conn.SetDeadline(time.Now().Add(timeout))
-	defer conn.SetDeadline(time.Time{})
+	startTime := time.Now()
 
 	// Perform RADIUS detection
 	fingerprint, err := p.performRADIUSDetection(conn, timeout)
@@ -84,35 +77,49 @@ func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 		return nil, err
 	}
 
+	// If detection failed, this is not RADIUS
 	if fingerprint == nil {
-		return nil, nil // Not RADIUS
+		return nil, nil
 	}
+
+	fingerprint.ResponseTime = time.Since(startTime)
 
 	// Create vendor information
 	vendor := p.createVendorInfo(fingerprint)
 
-	// Create service result using ServiceRADIUS struct
+	// Convert plugins.VSAInfo to VSAInfo for ServiceRADIUS struct
+	vsaInfoList := make([]plugins.VSAInfo, len(fingerprint.VendorSpecificAttributes))
+	for i, vsa := range fingerprint.VendorSpecificAttributes {
+		vsaInfoList[i] = plugins.VSAInfo{
+			VendorID:   vsa.VendorID,
+			VendorName: vsa.VendorName,
+			VendorType: vsa.VendorType,
+			DataLength: len(vsa.Data), // Calculate DataLength from Data
+		}
+	}
+
+	// Create service result using ServiceRADIUS struct with exact field names
 	serviceRADIUS := plugins.ServiceRADIUS{
-		// Vendor information
+		// Vendor information (exact field names from types.go)
 		VendorName:        vendor.Name,
 		VendorProduct:     vendor.Product,
 		VendorVersion:     vendor.Version,
-		VendorID:          vendor.ID,
+		VendorID:          fingerprint.VendorID,
 		VendorConfidence:  vendor.Confidence,
 		VendorMethod:      vendor.Method,
 		VendorDescription: vendor.Description,
 
-		// Attribute analysis
+		// Attribute analysis (exact field names from types.go)
 		AttributeCount: fingerprint.AttributeCount,
 		AttributeTypes: fingerprint.AttributeTypes,
 
-		// Vendor-Specific Attributes (VSAs)
-		VendorSpecificAttributes: fingerprint.VendorSpecificAttributes,
+		// Vendor-Specific Attributes (exact field names from types.go)
+		VendorSpecificAttributes: vsaInfoList, // Use converted VSAInfo list
 
-		// Protocol information
-		StandardPorts: fingerprint.StandardPorts,
-		LegacyPorts:   fingerprint.LegacyPorts,
-		Transport:     fingerprint.Transport,
+		// Protocol information (exact field names from types.go)
+		StandardPorts: []int{1812, 1813},
+		LegacyPorts:   []int{1645, 1646},
+		Transport:     "UDP",
 	}
 
 	service := plugins.CreateServiceFrom(target, serviceRADIUS, false, "", plugins.UDP)
@@ -121,18 +128,20 @@ func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 
 // performRADIUSDetection performs RADIUS protocol detection
 func (p *RADIUSPlugin) performRADIUSDetection(conn net.Conn, timeout time.Duration) (*RADIUSFingerprint, error) {
+	// Set connection timeout
+	conn.SetDeadline(time.Now().Add(timeout))
+	defer conn.SetDeadline(time.Time{})
+
 	// Create RADIUS Access-Request packet
-	radiusPacket := p.createRADIUSAccessRequest()
+	packet := p.createAccessRequestPacket()
 
 	// Send RADIUS packet
-	conn.SetWriteDeadline(time.Now().Add(timeout))
-	_, err := conn.Write(radiusPacket)
+	_, err := conn.Write(packet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send RADIUS packet: %w", err)
 	}
 
 	// Read RADIUS response
-	conn.SetReadDeadline(time.Now().Add(timeout))
 	response := make([]byte, 4096)
 	n, err := conn.Read(response)
 	if err != nil {
@@ -142,22 +151,26 @@ func (p *RADIUSPlugin) performRADIUSDetection(conn net.Conn, timeout time.Durati
 	// Parse RADIUS response
 	fingerprint, err := p.parseRADIUSResponse(response[:n])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to parse RADIUS response: %w", err)
 	}
 
-	// Set transport and port information
-	fingerprint.Transport = "UDP"
-	fingerprint.StandardPorts = []int{1812, 1813}
-	fingerprint.LegacyPorts = []int{1645, 1646}
+	// Analyze vendor-specific attributes
+	p.analyzeVendorSpecificAttributes(fingerprint)
+
+	// Set supported ports
+	fingerprint.SupportedPorts = []int{1812, 1813, 1645, 1646}
+
+	// Set authentication methods
+	fingerprint.AuthenticationMethods = []string{"PAP", "CHAP", "EAP", "MS-CHAP"}
 
 	return fingerprint, nil
 }
 
-// createRADIUSAccessRequest creates a RADIUS Access-Request packet
-func (p *RADIUSPlugin) createRADIUSAccessRequest() []byte {
+// createAccessRequestPacket creates a RADIUS Access-Request packet
+func (p *RADIUSPlugin) createAccessRequestPacket() []byte {
 	var packet bytes.Buffer
 
-	// RADIUS Header
+	// RADIUS header
 	packet.WriteByte(1)                                // Code: Access-Request
 	packet.WriteByte(1)                                // Identifier
 	binary.Write(&packet, binary.BigEndian, uint16(0)) // Length (will be updated)
@@ -165,31 +178,22 @@ func (p *RADIUSPlugin) createRADIUSAccessRequest() []byte {
 	// Request Authenticator (16 bytes)
 	authenticator := make([]byte, 16)
 	for i := range authenticator {
-		authenticator[i] = byte(i + 1) // Simple pattern
+		authenticator[i] = byte(i + 1)
 	}
 	packet.Write(authenticator)
 
 	// Add User-Name attribute
 	p.addRADIUSAttribute(&packet, 1, []byte("test"))
 
-	// Add User-Password attribute (encrypted with shared secret)
-	p.addRADIUSAttribute(&packet, 2, []byte("test"))
+	// Add User-Password attribute (encrypted)
+	password := p.encryptPassword("test", authenticator)
+	p.addRADIUSAttribute(&packet, 2, password)
 
 	// Add NAS-IP-Address attribute
 	p.addRADIUSAttribute(&packet, 4, []byte{192, 168, 1, 1})
 
-	// Add NAS-Port attribute
-	nasPort := make([]byte, 4)
-	binary.BigEndian.PutUint32(nasPort, 1234)
-	p.addRADIUSAttribute(&packet, 5, nasPort)
-
 	// Add Service-Type attribute
-	serviceType := make([]byte, 4)
-	binary.BigEndian.PutUint32(serviceType, 2) // Framed-User
-	p.addRADIUSAttribute(&packet, 6, serviceType)
-
-	// Add Calling-Station-Id attribute
-	p.addRADIUSAttribute(&packet, 31, []byte("00-11-22-33-44-55"))
+	p.addRADIUSAttribute(&packet, 6, []byte{0, 0, 0, 1}) // Login
 
 	// Update packet length
 	packetBytes := packet.Bytes()
@@ -200,132 +204,176 @@ func (p *RADIUSPlugin) createRADIUSAccessRequest() []byte {
 
 // addRADIUSAttribute adds a RADIUS attribute to the packet
 func (p *RADIUSPlugin) addRADIUSAttribute(packet *bytes.Buffer, attrType uint8, value []byte) {
-	packet.WriteByte(attrType)              // Attribute Type
-	packet.WriteByte(uint8(len(value) + 2)) // Attribute Length
-	packet.Write(value)                     // Attribute Value
+	packet.WriteByte(attrType)
+	packet.WriteByte(uint8(len(value) + 2))
+	packet.Write(value)
 }
 
-// parseRADIUSResponse parses a RADIUS response packet
+// encryptPassword encrypts RADIUS password using MD5
+func (p *RADIUSPlugin) encryptPassword(password string, authenticator []byte) []byte {
+	secret := "testing123" // Standard test secret
+
+	// Pad password to 16-byte boundary
+	padded := []byte(password)
+	for len(padded)%16 != 0 {
+		padded = append(padded, 0)
+	}
+
+	// Encrypt password
+	encrypted := make([]byte, len(padded))
+	hash := md5.New()
+	hash.Write([]byte(secret))
+	hash.Write(authenticator)
+	key := hash.Sum(nil)
+
+	for i := 0; i < len(padded); i += 16 {
+		for j := 0; j < 16; j++ {
+			encrypted[i+j] = padded[i+j] ^ key[j]
+		}
+		if i+16 < len(padded) {
+			hash.Reset()
+			hash.Write([]byte(secret))
+			hash.Write(encrypted[i : i+16])
+			key = hash.Sum(nil)
+		}
+	}
+
+	return encrypted
+}
+
+// parseRADIUSResponse parses RADIUS response packet
 func (p *RADIUSPlugin) parseRADIUSResponse(response []byte) (*RADIUSFingerprint, error) {
 	if len(response) < 20 {
 		return nil, fmt.Errorf("RADIUS response too short")
 	}
 
-	// Verify RADIUS header
-	code := response[0]
-	if code < 1 || code > 5 {
-		return nil, fmt.Errorf("invalid RADIUS response code: %d", code)
-	}
-
-	length := binary.BigEndian.Uint16(response[2:4])
-	if len(response) < int(length) {
-		return nil, fmt.Errorf("incomplete RADIUS response")
-	}
-
 	fingerprint := &RADIUSFingerprint{
-		VendorSpecificAttributes: []VSAInfo{},
+		VendorSpecificAttributes: []plugins.VSAInfo{}, // Initialize with plugins.VSAInfo
+		Attributes:               make(map[uint8][]byte),
+		VendorConfidence:         make(map[string]int),
+		DetectedVendors:          []string{},
 		AttributeTypes:           []uint8{},
 	}
 
+	// Parse RADIUS header
+	fingerprint.ResponseCode = response[0]
+
 	// Parse attributes
 	offset := 20 // Skip RADIUS header
-	for offset < int(length) {
+	for offset < len(response) {
 		if offset+2 > len(response) {
 			break
 		}
 
 		attrType := response[offset]
-		attrLength := response[offset+1]
+		attrLen := response[offset+1]
 
-		if attrLength < 2 || offset+int(attrLength) > len(response) {
+		if attrLen < 2 || offset+int(attrLen) > len(response) {
 			break
 		}
 
+		attrValue := response[offset+2 : offset+int(attrLen)]
+		fingerprint.Attributes[attrType] = attrValue
 		fingerprint.AttributeTypes = append(fingerprint.AttributeTypes, attrType)
 		fingerprint.AttributeCount++
 
-		// Check for Vendor-Specific Attributes (Type 26)
-		if attrType == 26 && attrLength >= 6 {
-			vendorID := binary.BigEndian.Uint32(response[offset+2 : offset+6])
-			vendorType := response[offset+6]
-			vendorLength := response[offset+7]
+		// Check for Vendor-Specific Attribute (type 26)
+		if attrType == 26 && len(attrValue) >= 6 {
+			vendorID := binary.BigEndian.Uint32(attrValue[0:4])
+			vendorType := attrValue[4]
+			vendorLength := attrValue[5]
 
-			vsa := VSAInfo{
-				VendorID:   vendorID,
-				VendorType: vendorType,
-				DataLength: int(vendorLength) - 2,
+			if vendorLength >= 2 && len(attrValue) >= int(vendorLength)+4 {
+				vendorData := attrValue[6 : 4+int(vendorLength)]
+
+				// Create plugins.VSAInfo with Data field
+				vsa := plugins.VSAInfo{
+					VendorID:   vendorID,
+					VendorType: vendorType,
+					Data:       vendorData,
+				}
+
+				if vendorName, exists := vendorIDs[vendorID]; exists {
+					vsa.VendorName = vendorName
+					fingerprint.VendorID = vendorID // Set primary vendor ID
+				}
+
+				fingerprint.VendorSpecificAttributes = append(fingerprint.VendorSpecificAttributes, vsa)
 			}
-
-			if vendorName, exists := vendorIDs[vendorID]; exists {
-				vsa.VendorName = vendorName
-			} else {
-				vsa.VendorName = fmt.Sprintf("Unknown (%d)", vendorID)
-			}
-
-			fingerprint.VendorSpecificAttributes = append(fingerprint.VendorSpecificAttributes, vsa)
 		}
 
-		offset += int(attrLength)
+		offset += int(attrLen)
 	}
 
 	return fingerprint, nil
 }
 
+// analyzeVendorSpecificAttributes analyzes VSAs for vendor identification
+func (p *RADIUSPlugin) analyzeVendorSpecificAttributes(fingerprint *RADIUSFingerprint) {
+	vendorCounts := make(map[string]int)
+
+	for _, vsa := range fingerprint.VendorSpecificAttributes {
+		if vsa.VendorName != "" {
+			vendorCounts[vsa.VendorName]++
+			fingerprint.VendorConfidence[vsa.VendorName] += 25
+		}
+	}
+
+	// Determine detected vendors
+	for vendor, count := range vendorCounts {
+		if count > 0 {
+			fingerprint.DetectedVendors = append(fingerprint.DetectedVendors, vendor)
+		}
+	}
+}
+
 // createVendorInfo creates vendor information based on detection results
 func (p *RADIUSPlugin) createVendorInfo(fingerprint *RADIUSFingerprint) VendorInfo {
 	vendor := VendorInfo{
-		Name:       "Unknown",
-		Product:    "RADIUS Server",
-		Confidence: 60,
-		Method:     "RADIUS Protocol Analysis",
+		Name:        "Unknown",
+		Product:     "RADIUS Server",
+		Method:      "RADIUS Protocol Analysis",
+		Description: "RADIUS server detected via protocol communication",
 	}
 
-	// Analyze VSAs for vendor detection
-	vendorCounts := make(map[uint32]int)
-	for _, vsa := range fingerprint.VendorSpecificAttributes {
-		vendorCounts[vsa.VendorID]++
-	}
-
-	// Find most common vendor
-	var maxCount int
-	var primaryVendorID uint32
-	for vendorID, count := range vendorCounts {
-		if count > maxCount {
-			maxCount = count
-			primaryVendorID = vendorID
-		}
-	}
-
-	if maxCount > 0 {
-		if vendorName, exists := vendorIDs[primaryVendorID]; exists {
+	// Determine primary vendor
+	maxConfidence := 0
+	for vendorName, confidence := range fingerprint.VendorConfidence {
+		if confidence > maxConfidence {
+			maxConfidence = confidence
 			vendor.Name = vendorName
-			vendor.Product = fmt.Sprintf("%s RADIUS Server", vendorName)
-			vendor.ID = primaryVendorID
-			vendor.Confidence = 85
-			vendor.Method = "Vendor-Specific Attribute Analysis"
-			vendor.Description = fmt.Sprintf("Detected via %d VSAs from vendor ID %d", maxCount, primaryVendorID)
+			vendor.Confidence = confidence
 		}
 	}
 
-	// Enhance detection based on attribute patterns
-	if len(fingerprint.AttributeTypes) > 10 {
-		vendor.Confidence += 10
+	// Set vendor-specific product information
+	switch vendor.Name {
+	case "Cisco":
+		vendor.Product = "Cisco RADIUS Server"
+		vendor.Description = "Cisco RADIUS server with vendor-specific attributes"
+	case "Microsoft":
+		vendor.Product = "Microsoft NPS/IAS"
+		vendor.Description = "Microsoft Network Policy Server or Internet Authentication Service"
+	case "Fortinet":
+		vendor.Product = "FortiAuthenticator"
+		vendor.Description = "Fortinet RADIUS authentication server"
+	case "Aruba":
+		vendor.Product = "Aruba ClearPass"
+		vendor.Description = "Aruba ClearPass Policy Manager"
+	default:
+		if len(fingerprint.DetectedVendors) > 0 {
+			vendor.Name = fingerprint.DetectedVendors[0]
+			vendor.Confidence = 50
+		} else {
+			vendor.Confidence = 30
+		}
 	}
 
-	// Specific vendor detection patterns
-	switch primaryVendorID {
-	case 9: // Cisco
-		vendor.Product = "Cisco RADIUS Server (ISE/ACS)"
-		vendor.Version = "Detected via Cisco VSAs"
-	case 311: // Microsoft
-		vendor.Product = "Microsoft NPS/IAS"
-		vendor.Version = "Windows RADIUS Server"
-	case 26895: // Fortinet
-		vendor.Product = "FortiAuthenticator"
-		vendor.Version = "Fortinet RADIUS Server"
-	case 35265: // Aruba
-		vendor.Product = "Aruba ClearPass"
-		vendor.Version = "Aruba RADIUS Server"
+	// Adjust confidence based on response
+	if fingerprint.ResponseCode == 2 { // Access-Accept
+		vendor.Confidence += 20
+	} else if fingerprint.ResponseCode == 3 { // Access-Reject
+		vendor.Confidence += 15
 	}
 
 	return vendor
@@ -349,5 +397,5 @@ func (p *RADIUSPlugin) Type() plugins.Protocol {
 
 // Priority returns the plugin priority
 func (p *RADIUSPlugin) Priority() int {
-	return 600
+	return 650
 }
