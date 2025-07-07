@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"time"
@@ -22,58 +23,6 @@ type ZabbixHeader struct {
 	Version  uint8   // Protocol version (1)
 	DataLen  uint32  // Data length (little endian)
 	Reserved uint32  // Reserved (0)
-}
-
-// PassiveCheckRequest represents a Zabbix passive check request
-type PassiveCheckRequest struct {
-	Request string `json:"request"`
-	Data    []struct {
-		Key     string `json:"key"`
-		Timeout int    `json:"timeout"`
-	} `json:"data"`
-}
-
-// PassiveCheckResponse represents a Zabbix passive check response
-type PassiveCheckResponse struct {
-	Version string `json:"version"`
-	Variant int    `json:"variant"`
-	Data    []struct {
-		Value string `json:"value,omitempty"`
-		Error string `json:"error,omitempty"`
-	} `json:"data"`
-}
-
-// ActiveCheckRequest represents a Zabbix active check request
-type ActiveCheckRequest struct {
-	Request        string `json:"request"`
-	Host           string `json:"host"`
-	HostMetadata   string `json:"host_metadata,omitempty"`
-	Interface      string `json:"interface,omitempty"`
-	IP             string `json:"ip,omitempty"`
-	Port           int    `json:"port,omitempty"`
-	Version        string `json:"version"`
-	Variant        int    `json:"variant"`
-	ConfigRevision int    `json:"config_revision,omitempty"`
-	Session        string `json:"session,omitempty"`
-}
-
-// ActiveCheckResponse represents a Zabbix active check response
-type ActiveCheckResponse struct {
-	Response       string `json:"response"`
-	ConfigRevision int    `json:"config_revision,omitempty"`
-	Data           []struct {
-		Key         string `json:"key"`
-		ItemID      int    `json:"itemid"`
-		Delay       string `json:"delay"`
-		LastLogSize int    `json:"lastlogsize"`
-		MTime       int    `json:"mtime"`
-		Timeout     string `json:"timeout,omitempty"`
-	} `json:"data,omitempty"`
-	Commands []struct {
-		Command string `json:"command"`
-		ID      int    `json:"id"`
-		Wait    int    `json:"wait"`
-	} `json:"commands,omitempty"`
 }
 
 // VendorInfo represents detected Zabbix vendor information
@@ -113,6 +62,7 @@ type ZabbixFingerprint struct {
 	Architecture      string
 	KernelVersion     string
 	DetectionLevel    string
+	DetectionMethod   string
 }
 
 var (
@@ -121,18 +71,43 @@ var (
 		10051: {}, // Zabbix Server/Proxy (active)
 	}
 
-	// Common Zabbix agent items for testing
-	testItems = []string{
-		"agent.ping",
-		"agent.version",
-		"system.uptime",
-		"system.hostname",
-		"system.uname",
-		"vfs.fs.size[/,total]",
-		"vm.memory.size[total]",
-		"system.cpu.load[all,avg1]",
-		"net.if.discovery",
-		"system.sw.packages",
+	// Magic payloads for Zabbix protocol detection
+	zabbixMagicPayloads = []struct {
+		name        string
+		payload     []byte
+		description string
+	}{
+		{
+			name:        "agent.ping",
+			payload:     []byte("agent.ping"),
+			description: "Basic agent ping test",
+		},
+		{
+			name:        "agent.version",
+			payload:     []byte("agent.version"),
+			description: "Agent version request",
+		},
+		{
+			name:        "system.uptime",
+			payload:     []byte("system.uptime"),
+			description: "System uptime request",
+		},
+		{
+			name:        "invalid_key_test",
+			payload:     []byte("invalid.key.test.12345"),
+			description: "Invalid key to trigger error response",
+		},
+	}
+
+	// Expected Zabbix response patterns
+	zabbixResponsePatterns = []string{
+		"ZBX_NOTSUPPORTED",
+		"Unsupported item key",
+		"Cannot obtain system information",
+		"Access denied",
+		"Timeout while executing",
+		"Invalid item key format",
+		"NOTSUPPORTED",
 	}
 )
 
@@ -212,7 +187,7 @@ func (p *ZabbixAgentPlugin) Run(conn net.Conn, timeout time.Duration, target plu
 	return service, nil
 }
 
-// performZabbixDetection performs Zabbix Agent protocol detection
+// performZabbixDetection performs Zabbix Agent protocol detection using magic payloads
 func (p *ZabbixAgentPlugin) performZabbixDetection(conn net.Conn, timeout time.Duration) (*ZabbixFingerprint, error) {
 	// Set connection timeout
 	conn.SetDeadline(time.Now().Add(timeout))
@@ -224,204 +199,200 @@ func (p *ZabbixAgentPlugin) performZabbixDetection(conn net.Conn, timeout time.D
 		DetectionLevel:  "basic",
 	}
 
-	// Try passive check first (most common)
-	success, err := p.tryPassiveCheck(conn, fingerprint)
-	if err != nil {
-		return nil, err
-	}
+	// Try different detection methods in order of reliability
 
-	if success {
+	// 1. Try JSON protocol with magic payloads
+	if success, method := p.tryJSONProtocolDetection(conn, fingerprint); success {
+		fingerprint.ProtocolVersion = "7.0+"
 		fingerprint.PassiveChecks = true
 		fingerprint.DetectionLevel = "enhanced"
+		fingerprint.DetectionMethod = method
+		return fingerprint, nil
+	}
 
-		// Try to get more information with additional checks
-		p.performEnhancedDetection(conn, fingerprint)
-	} else {
-		// Try active check request
-		success, err = p.tryActiveCheck(conn, fingerprint)
-		if err != nil {
-			return nil, err
+	// 2. Try legacy plaintext protocol with magic payloads
+	if success, method := p.tryPlaintextProtocolDetection(conn, fingerprint); success {
+		fingerprint.ProtocolVersion = "legacy"
+		fingerprint.PassiveChecks = true
+		fingerprint.DetectionLevel = "enhanced"
+		fingerprint.DetectionMethod = method
+		return fingerprint, nil
+	}
+
+	// 3. Try protocol header detection
+	if success, method := p.tryProtocolHeaderDetection(conn, fingerprint); success {
+		fingerprint.ProtocolVersion = "detected"
+		fingerprint.DetectionLevel = "basic"
+		fingerprint.DetectionMethod = method
+		return fingerprint, nil
+	}
+
+	// 4. Try response pattern detection
+	if success, method := p.tryResponsePatternDetection(conn, fingerprint); success {
+		fingerprint.ProtocolVersion = "pattern"
+		fingerprint.DetectionLevel = "basic"
+		fingerprint.DetectionMethod = method
+		return fingerprint, nil
+	}
+
+	// Not a Zabbix Agent
+	return nil, nil
+}
+
+// tryJSONProtocolDetection attempts JSON protocol detection
+func (p *ZabbixAgentPlugin) tryJSONProtocolDetection(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, string) {
+	for _, magic := range zabbixMagicPayloads {
+		// Create JSON request
+		jsonRequest := map[string]interface{}{
+			"request": "passive checks",
+			"data": []map[string]interface{}{
+				{
+					"key":     magic.name,
+					"timeout": 3,
+				},
+			},
 		}
 
-		if success {
-			fingerprint.ActiveChecks = true
-			fingerprint.DetectionLevel = "enhanced"
-		} else {
-			// Not a Zabbix Agent
-			return nil, nil
+		// Send JSON request with Zabbix header
+		if err := p.sendZabbixJSONRequest(conn, jsonRequest); err != nil {
+			continue
 		}
-	}
 
-	return fingerprint, nil
-}
-
-// tryPassiveCheck attempts a Zabbix passive check
-func (p *ZabbixAgentPlugin) tryPassiveCheck(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, error) {
-	// Create passive check request for agent.version
-	request := PassiveCheckRequest{
-		Request: "passive checks",
-		Data: []struct {
-			Key     string `json:"key"`
-			Timeout int    `json:"timeout"`
-		}{
-			{Key: "agent.version", Timeout: 3},
-		},
-	}
-
-	// Send request
-	err := p.sendZabbixRequest(conn, request)
-	if err != nil {
-		return false, err
-	}
-
-	// Read response
-	response, err := p.readZabbixResponse(conn)
-	if err != nil {
-		return false, err
-	}
-
-	// Parse passive check response
-	var passiveResp PassiveCheckResponse
-	err = json.Unmarshal(response, &passiveResp)
-	if err != nil {
-		return false, nil // Not valid JSON, not Zabbix
-	}
-
-	// Check if this is a valid Zabbix response
-	if passiveResp.Version == "" || passiveResp.Variant == 0 {
-		return false, nil
-	}
-
-	// Extract information
-	fingerprint.AgentVersion = passiveResp.Version
-	fingerprint.AgentVariant = passiveResp.Variant
-	fingerprint.ProtocolVersion = "7.0+"
-
-	if len(passiveResp.Data) > 0 && passiveResp.Data[0].Value != "" {
-		fingerprint.SupportedItems = append(fingerprint.SupportedItems, "agent.version")
-	}
-
-	return true, nil
-}
-
-// tryActiveCheck attempts a Zabbix active check request
-func (p *ZabbixAgentPlugin) tryActiveCheck(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, error) {
-	// Create active check request
-	request := ActiveCheckRequest{
-		Request: "active checks",
-		Host:    "test-host",
-		Version: "7.4.0",
-		Variant: 2,
-	}
-
-	// Send request
-	err := p.sendZabbixRequest(conn, request)
-	if err != nil {
-		return false, err
-	}
-
-	// Read response
-	response, err := p.readZabbixResponse(conn)
-	if err != nil {
-		return false, err
-	}
-
-	// Parse active check response
-	var activeResp ActiveCheckResponse
-	err = json.Unmarshal(response, &activeResp)
-	if err != nil {
-		return false, nil // Not valid JSON, not Zabbix
-	}
-
-	// Check if this is a valid Zabbix response
-	if activeResp.Response == "" {
-		return false, nil
-	}
-
-	// Extract information
-	fingerprint.ConfigRevision = activeResp.ConfigRevision
-	fingerprint.RemoteCommands = len(activeResp.Commands) > 0
-
-	// Extract supported items from response
-	for _, item := range activeResp.Data {
-		fingerprint.SupportedItems = append(fingerprint.SupportedItems, item.Key)
-	}
-
-	return true, nil
-}
-
-// performEnhancedDetection performs additional checks to gather more information
-func (p *ZabbixAgentPlugin) performEnhancedDetection(conn net.Conn, fingerprint *ZabbixFingerprint) {
-	// Try additional items to gather system information
-	systemItems := []string{
-		"system.hostname",
-		"system.uname",
-		"agent.ping",
-	}
-
-	for _, item := range systemItems {
-		value, err := p.checkSingleItem(conn, item)
+		// Try to read response
+		response, err := p.readZabbixResponse(conn)
 		if err != nil {
 			continue
 		}
 
-		fingerprint.SupportedItems = append(fingerprint.SupportedItems, item)
+		// Check if response is valid JSON and contains Zabbix patterns
+		if p.isZabbixJSONResponse(response) {
+			fingerprint.SupportedItems = append(fingerprint.SupportedItems, magic.name)
+			return true, fmt.Sprintf("JSON protocol with %s", magic.name)
+		}
 
-		// Extract system information
-		switch item {
-		case "system.hostname":
-			fingerprint.Hostname = value
-		case "system.uname":
-			fingerprint.OperatingSystem = value
-			// Parse uname output for more details
-			parts := strings.Fields(value)
-			if len(parts) >= 3 {
-				fingerprint.KernelVersion = parts[2]
-			}
-			if len(parts) >= 5 {
-				fingerprint.Architecture = parts[4]
-			}
+		// Check for Zabbix error patterns in JSON
+		if p.containsZabbixPatterns(string(response)) {
+			return true, fmt.Sprintf("JSON protocol error pattern with %s", magic.name)
 		}
 	}
+
+	return false, ""
 }
 
-// checkSingleItem performs a single item check
-func (p *ZabbixAgentPlugin) checkSingleItem(conn net.Conn, key string) (string, error) {
-	request := PassiveCheckRequest{
-		Request: "passive checks",
-		Data: []struct {
-			Key     string `json:"key"`
-			Timeout int    `json:"timeout"`
-		}{
-			{Key: key, Timeout: 3},
-		},
+// tryPlaintextProtocolDetection attempts plaintext protocol detection
+func (p *ZabbixAgentPlugin) tryPlaintextProtocolDetection(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, string) {
+	for _, magic := range zabbixMagicPayloads {
+		// Send plaintext request
+		_, err := conn.Write(append(magic.payload, '\n'))
+		if err != nil {
+			continue
+		}
+
+		// Read response
+		response := make([]byte, 1024)
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		n, err := conn.Read(response)
+		if err != nil {
+			continue
+		}
+
+		responseStr := strings.TrimSpace(string(response[:n]))
+
+		// Check for typical Zabbix responses
+		if p.isZabbixPlaintextResponse(responseStr, magic.name) {
+			fingerprint.SupportedItems = append(fingerprint.SupportedItems, magic.name)
+			return true, fmt.Sprintf("Plaintext protocol with %s", magic.name)
+		}
+
+		// Check for Zabbix error patterns
+		if p.containsZabbixPatterns(responseStr) {
+			return true, fmt.Sprintf("Plaintext protocol error pattern with %s", magic.name)
+		}
 	}
 
-	err := p.sendZabbixRequest(conn, request)
-	if err != nil {
-		return "", err
-	}
-
-	response, err := p.readZabbixResponse(conn)
-	if err != nil {
-		return "", err
-	}
-
-	var passiveResp PassiveCheckResponse
-	err = json.Unmarshal(response, &passiveResp)
-	if err != nil {
-		return "", err
-	}
-
-	if len(passiveResp.Data) > 0 && passiveResp.Data[0].Value != "" {
-		return passiveResp.Data[0].Value, nil
-	}
-
-	return "", fmt.Errorf("no value returned")
+	return false, ""
 }
 
-// sendZabbixRequest sends a Zabbix protocol request
-func (p *ZabbixAgentPlugin) sendZabbixRequest(conn net.Conn, request interface{}) error {
+// tryProtocolHeaderDetection attempts to detect Zabbix by sending malformed requests and checking headers
+func (p *ZabbixAgentPlugin) tryProtocolHeaderDetection(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, string) {
+	// Send a malformed Zabbix header to trigger a response
+	malformedHeader := []byte{
+		'Z', 'B', 'X', 'D', // Protocol signature
+		0x01,                   // Version
+		0x05, 0x00, 0x00, 0x00, // Data length (5 bytes)
+		0x00, 0x00, 0x00, 0x00, // Reserved
+		't', 'e', 's', 't', '\n', // Test data
+	}
+
+	_, err := conn.Write(malformedHeader)
+	if err != nil {
+		return false, ""
+	}
+
+	// Read response
+	response := make([]byte, 1024)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, err := conn.Read(response)
+	if err != nil {
+		return false, ""
+	}
+
+	// Check if response starts with ZBXD header
+	if n >= 4 && string(response[0:4]) == "ZBXD" {
+		return true, "Protocol header detection"
+	}
+
+	// Check for Zabbix error patterns in response
+	responseStr := string(response[:n])
+	if p.containsZabbixPatterns(responseStr) {
+		return true, "Protocol header error pattern"
+	}
+
+	return false, ""
+}
+
+// tryResponsePatternDetection attempts detection by sending various payloads and analyzing patterns
+func (p *ZabbixAgentPlugin) tryResponsePatternDetection(conn net.Conn, fingerprint *ZabbixFingerprint) (bool, string) {
+	testPayloads := [][]byte{
+		[]byte("test\n"),
+		[]byte("invalid\n"),
+		[]byte("system.cpu.load\n"),
+		[]byte("vfs.fs.size[/]\n"),
+		[]byte("\n"),
+		[]byte("GET / HTTP/1.1\r\n\r\n"), // HTTP request to see if it responds differently
+	}
+
+	for i, payload := range testPayloads {
+		_, err := conn.Write(payload)
+		if err != nil {
+			continue
+		}
+
+		response := make([]byte, 1024)
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := conn.Read(response)
+		if err != nil {
+			continue
+		}
+
+		responseStr := string(response[:n])
+
+		// Check for Zabbix patterns
+		if p.containsZabbixPatterns(responseStr) {
+			return true, fmt.Sprintf("Response pattern detection with payload %d", i+1)
+		}
+
+		// Check for typical Zabbix behavior (connection close on invalid data)
+		if n == 0 && i > 0 {
+			return true, "Connection behavior pattern"
+		}
+	}
+
+	return false, ""
+}
+
+// sendZabbixJSONRequest sends a JSON request with proper Zabbix header
+func (p *ZabbixAgentPlugin) sendZabbixJSONRequest(conn net.Conn, request interface{}) error {
 	// Marshal request to JSON
 	jsonData, err := json.Marshal(request)
 	if err != nil {
@@ -439,42 +410,151 @@ func (p *ZabbixAgentPlugin) sendZabbixRequest(conn net.Conn, request interface{}
 	// Write header
 	var buf bytes.Buffer
 	binary.Write(&buf, binary.LittleEndian, header)
-
-	// Write data
 	buf.Write(jsonData)
 
-	// Send to connection
 	_, err = conn.Write(buf.Bytes())
 	return err
 }
 
 // readZabbixResponse reads a Zabbix protocol response
 func (p *ZabbixAgentPlugin) readZabbixResponse(conn net.Conn) ([]byte, error) {
-	// Read header (13 bytes)
+	// Try to read header first
 	headerBuf := make([]byte, 13)
-	_, err := conn.Read(headerBuf)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, err := conn.Read(headerBuf)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse header
-	if string(headerBuf[0:4]) != "ZBXD" {
-		return nil, fmt.Errorf("invalid Zabbix protocol header")
+	// If we got less than header size, return what we got
+	if n < 13 {
+		return headerBuf[:n], nil
 	}
 
+	// Check for Zabbix header
+	if string(headerBuf[0:4]) != "ZBXD" {
+		return headerBuf, nil
+	}
+
+	// Parse data length
 	dataLen := binary.LittleEndian.Uint32(headerBuf[5:9])
+	if dataLen == 0 {
+		return []byte{}, nil
+	}
+
 	if dataLen > 1024*1024 { // 1MB limit
-		return nil, fmt.Errorf("response too large")
+		return headerBuf, nil
 	}
 
 	// Read data
 	dataBuf := make([]byte, dataLen)
-	_, err = conn.Read(dataBuf)
+	_, err = io.ReadFull(conn, dataBuf)
 	if err != nil {
-		return nil, err
+		return headerBuf, nil // Return header even if data read fails
 	}
 
 	return dataBuf, nil
+}
+
+// isZabbixJSONResponse checks if response is a valid Zabbix JSON response
+func (p *ZabbixAgentPlugin) isZabbixJSONResponse(response []byte) bool {
+	var jsonResp map[string]interface{}
+	if err := json.Unmarshal(response, &jsonResp); err != nil {
+		return false
+	}
+
+	// Check for Zabbix JSON response fields
+	if version, exists := jsonResp["version"]; exists {
+		if versionStr, ok := version.(string); ok && p.isZabbixVersion(versionStr) {
+			return true
+		}
+	}
+
+	if variant, exists := jsonResp["variant"]; exists {
+		if variantNum, ok := variant.(float64); ok && (variantNum == 1 || variantNum == 2) {
+			return true
+		}
+	}
+
+	// Check for data array with Zabbix-like content
+	if data, exists := jsonResp["data"]; exists {
+		if dataArray, ok := data.([]interface{}); ok && len(dataArray) > 0 {
+			if dataItem, ok := dataArray[0].(map[string]interface{}); ok {
+				if _, hasValue := dataItem["value"]; hasValue {
+					return true
+				}
+				if _, hasError := dataItem["error"]; hasError {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// isZabbixPlaintextResponse checks if response is a valid Zabbix plaintext response
+func (p *ZabbixAgentPlugin) isZabbixPlaintextResponse(response, key string) bool {
+	response = strings.TrimSpace(response)
+
+	switch key {
+	case "agent.ping":
+		return response == "1"
+	case "agent.version":
+		return p.isZabbixVersion(response)
+	case "system.uptime":
+		return p.isNumeric(response)
+	default:
+		// Check for typical Zabbix responses
+		return response == "1" ||
+			p.isNumeric(response) ||
+			p.isZabbixVersion(response) ||
+			p.containsZabbixPatterns(response)
+	}
+}
+
+// containsZabbixPatterns checks if text contains known Zabbix error patterns
+func (p *ZabbixAgentPlugin) containsZabbixPatterns(text string) bool {
+	text = strings.ToUpper(text)
+	for _, pattern := range zabbixResponsePatterns {
+		if strings.Contains(text, strings.ToUpper(pattern)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isZabbixVersion checks if a string looks like a Zabbix version
+func (p *ZabbixAgentPlugin) isZabbixVersion(s string) bool {
+	if len(s) < 3 || len(s) > 20 {
+		return false
+	}
+
+	parts := strings.Split(s, ".")
+	if len(parts) < 2 || len(parts) > 4 {
+		return false
+	}
+
+	for _, part := range parts {
+		if !p.isNumeric(part) {
+			return false
+		}
+	}
+
+	return true
+}
+
+// isNumeric checks if a string is numeric
+func (p *ZabbixAgentPlugin) isNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // createVendorInfo creates vendor information based on detection results
@@ -483,33 +563,46 @@ func (p *ZabbixAgentPlugin) createVendorInfo(fingerprint *ZabbixFingerprint) Ven
 		Name:        "Zabbix",
 		Product:     "Zabbix Agent",
 		Version:     fingerprint.AgentVersion,
-		Method:      "Zabbix Protocol Analysis",
-		Description: "Zabbix monitoring agent detected via protocol communication",
-		Confidence:  85,
+		Method:      fingerprint.DetectionMethod,
+		Description: "Zabbix monitoring agent detected via protocol analysis",
+		Confidence:  60, // Start with moderate confidence
 	}
 
-	// Determine agent variant
+	// Adjust confidence based on detection method
+	switch {
+	case strings.Contains(fingerprint.DetectionMethod, "JSON protocol"):
+		vendor.Confidence = 90
+	case strings.Contains(fingerprint.DetectionMethod, "Plaintext protocol"):
+		vendor.Confidence = 85
+	case strings.Contains(fingerprint.DetectionMethod, "Protocol header"):
+		vendor.Confidence = 80
+	case strings.Contains(fingerprint.DetectionMethod, "Response pattern"):
+		vendor.Confidence = 70
+	case strings.Contains(fingerprint.DetectionMethod, "Connection behavior"):
+		vendor.Confidence = 60
+	}
+
+	// Adjust based on agent variant
 	switch fingerprint.AgentVariant {
 	case 1:
 		vendor.Product = "Zabbix Agent"
-		vendor.Description = "Zabbix Agent (classic) detected"
 	case 2:
 		vendor.Product = "Zabbix Agent 2"
-		vendor.Description = "Zabbix Agent 2 (Go-based) detected"
 	}
 
-	// Adjust confidence based on detection level
-	if fingerprint.DetectionLevel == "enhanced" {
+	// Boost confidence if we have version info
+	if fingerprint.AgentVersion != "" {
+		vendor.Confidence += 10
+	}
+
+	// Boost confidence if we have multiple supported items
+	if len(fingerprint.SupportedItems) > 1 {
+		vendor.Confidence += 5
+	}
+
+	// Cap at 95 for protocol detection (not 100% without full handshake)
+	if vendor.Confidence > 95 {
 		vendor.Confidence = 95
-	}
-
-	// Adjust confidence based on supported features
-	if len(fingerprint.SupportedItems) > 3 {
-		vendor.Confidence = 98
-	}
-
-	if fingerprint.PassiveChecks && fingerprint.ActiveChecks {
-		vendor.Confidence = 99
 	}
 
 	return vendor
