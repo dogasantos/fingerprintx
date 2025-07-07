@@ -239,29 +239,9 @@ func (e Service) Metadata() Metadata {
 		return p
 
 	//ADDED
-	case ProtoCCL:
-		var p ServiceCCL
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoCLE: //checkpoint-log-exporter
-		var p ServiceCLE
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
 
-	case ProtoEMS:
-		var p ServiceEMS
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoFAZD:
-		var p ServiceFAZD
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
 	case ProtoFGFMSD:
 		var p ServiceFGFMSD
-		_ = json.Unmarshal(e.Raw, &p)
-		return p
-	case ProtoFGHAS: //fghas
-		var p ServiceFGHAS
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 	case ProtoRADIUS:
