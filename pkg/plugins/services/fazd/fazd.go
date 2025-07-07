@@ -40,9 +40,6 @@ type FAZDFingerprint struct {
 	DeviceModel        string
 	LogCapabilities    []string
 	StorageInfo        map[string]interface{}
-	AnalyticsFeatures  []string
-	ReportingFeatures  []string
-	SecurityInfo       map[string]interface{}
 }
 
 var (
@@ -158,9 +155,9 @@ func (p *FAZDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 	// Create vendor information
 	vendor := p.createVendorInfo(finalDetection)
 
-	// Create service result using ServiceFAZD struct
+	// Create service result using ServiceFAZD struct with correct field names
 	serviceFAZD := plugins.ServiceFAZD{
-		// Vendor information
+		// Vendor information (exact field names from types.go)
 		VendorName:        vendor.Name,
 		VendorProduct:     vendor.Product,
 		VendorVersion:     vendor.Version,
@@ -168,25 +165,28 @@ func (p *FAZDPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 		VendorMethod:      vendor.Method,
 		VendorDescription: vendor.Description,
 
-		// Certificate information
-		CertificateInfo: finalDetection.CertificateInfo,
-		TLSVersion:      finalDetection.TLSVersion,
-		CipherSuite:     finalDetection.CipherSuite,
-		ServerName:      finalDetection.ServerName,
-		ResponseTime:    finalDetection.ResponseTime,
-
-		// Protocol and service information
+		// FAZD fingerprint data (exact field names from types.go)
+		ResponseTimeMs:     finalDetection.ResponseTime.Milliseconds(),
+		TLSVersion:         finalDetection.TLSVersion,
+		CipherSuite:        finalDetection.CipherSuite,
+		ServerName:         finalDetection.ServerName,
 		ProtocolSupport:    finalDetection.ProtocolSupport,
 		AuthenticationMode: finalDetection.AuthenticationMode,
 		ServiceVersion:     finalDetection.ServiceVersion,
 		DeviceModel:        finalDetection.DeviceModel,
 
-		// FAZD-specific capabilities and features
-		LogCapabilities:   finalDetection.LogCapabilities,
-		StorageInfo:       finalDetection.StorageInfo,
-		AnalyticsFeatures: finalDetection.AnalyticsFeatures,
-		ReportingFeatures: finalDetection.ReportingFeatures,
-		SecurityInfo:      finalDetection.SecurityInfo,
+		// FAZD-specific capabilities and features (exact field names from types.go)
+		LogCapabilities: finalDetection.LogCapabilities,
+		StorageInfo:     finalDetection.StorageInfo,
+		CertificateInfo: finalDetection.CertificateInfo,
+
+		// Protocol information (exact field names from types.go)
+		StandardPorts:  []int{514, 5199, 5200, 5201, 8080, 8443},
+		Transport:      "TCP",
+		Encryption:     "TLS",
+		Authentication: finalDetection.AuthenticationMode,
+		ProtocolFamily: "FortiAnalyzer",
+		ServiceType:    "Log_Analysis_Server",
 	}
 
 	service := plugins.CreateServiceFrom(target, serviceFAZD, false, "", plugins.TCP)
@@ -220,14 +220,11 @@ func (p *FAZDPlugin) performBasicFAZDDetection(conn net.Conn, timeout time.Durat
 
 	serverCert := state.PeerCertificates[0]
 	fingerprint := &FAZDFingerprint{
-		CertificateInfo:   make(map[string]interface{}),
-		LogCapabilities:   []string{},
-		StorageInfo:       make(map[string]interface{}),
-		AnalyticsFeatures: []string{},
-		ReportingFeatures: []string{},
-		SecurityInfo:      make(map[string]interface{}),
-		TLSVersion:        p.getTLSVersionString(state.Version),
-		CipherSuite:       p.getCipherSuiteString(state.CipherSuite),
+		CertificateInfo: make(map[string]interface{}),
+		LogCapabilities: []string{},
+		StorageInfo:     make(map[string]interface{}),
+		TLSVersion:      p.getTLSVersionString(state.Version),
+		CipherSuite:     p.getCipherSuiteString(state.CipherSuite),
 	}
 
 	// Extract certificate information
@@ -559,69 +556,6 @@ func (p *FAZDPlugin) extractDetailedFAZDInformation(fingerprint *FAZDFingerprint
 		"Log_Correlation",
 		"Log_Aggregation",
 		"Log_Normalization",
-	}
-
-	// Set analytics features
-	fingerprint.AnalyticsFeatures = []string{
-		"Security_Analytics",
-		"Network_Analytics",
-		"User_Analytics",
-		"Application_Analytics",
-		"Threat_Analytics",
-		"Compliance_Analytics",
-		"Performance_Analytics",
-		"Bandwidth_Analytics",
-		"Geographic_Analytics",
-		"Time_Series_Analytics",
-		"Statistical_Analysis",
-		"Trend_Analysis",
-		"Anomaly_Detection",
-		"Behavioral_Analysis",
-		"Risk_Assessment",
-		"Vulnerability_Analysis",
-		"Attack_Pattern_Analysis",
-		"IOC_Analysis",
-		"MITRE_ATT&CK_Mapping",
-		"Kill_Chain_Analysis",
-	}
-
-	// Set reporting features
-	fingerprint.ReportingFeatures = []string{
-		"Executive_Reports",
-		"Technical_Reports",
-		"Compliance_Reports",
-		"Security_Reports",
-		"Network_Reports",
-		"User_Reports",
-		"Application_Reports",
-		"Threat_Reports",
-		"Incident_Reports",
-		"Forensic_Reports",
-		"Custom_Reports",
-		"Scheduled_Reports",
-		"Ad_Hoc_Reports",
-		"Interactive_Reports",
-		"Dashboard_Reports",
-		"PDF_Export",
-		"Excel_Export",
-		"CSV_Export",
-		"Email_Delivery",
-		"Report_Templates",
-	}
-
-	// Set security information
-	fingerprint.SecurityInfo = map[string]interface{}{
-		"deployment_mode":   "log_analysis",
-		"data_protection":   "encryption_at_rest",
-		"access_control":    "role_based",
-		"audit_logging":     "comprehensive",
-		"data_retention":    "configurable",
-		"backup_support":    "automated",
-		"disaster_recovery": "supported",
-		"high_availability": "cluster_support",
-		"scalability":       "horizontal_vertical",
-		"integration_apis":  "available",
-		"supported_formats": []string{"Syslog", "CEF", "LEEF", "JSON", "XML"},
 	}
 
 	// Update protocol support
