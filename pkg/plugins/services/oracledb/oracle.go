@@ -224,7 +224,7 @@ func parseInfo(response []byte) (map[string]any, string) {
 	VsNum, _ := strconv.Atoi(VSNNum)
 	version := big.NewInt(int64(VsNum)).Bytes()
 	split := strconv.FormatInt(int64(version[1]), 16)
-	versionStr := fmt.Sprintf("%d.%c.%c.%d.%d", version[0], split[0], split[1], version[2], version[3])
+	versionStr := fmt.Sprintf("%d.%c.%c.%d", version[0], split[0], split[1], version[2])
 
 	// Create the product banner in the format "oracle database_server X.X.X.X.X"
 	productBanner := fmt.Sprintf("oracle database_server %s", versionStr)
