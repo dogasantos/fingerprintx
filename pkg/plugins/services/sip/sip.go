@@ -632,69 +632,78 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*Vend
 	return bestVendor, sipResponse, nil
 }
 
-// createServiceWithVendorInfo creates a service object with vendor information
 func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, response *SIPResponse) *plugins.Service {
-	serviceName := SIP
+	// Create ServiceSIP struct with vendor information
+	serviceSIP := plugins.ServiceSIP{
+		// Vendor information
+		VendorName:        "",
+		VendorProduct:     "",
+		VendorVersion:     "",
+		VendorConfidence:  0,
+		VendorMethod:      "",
+		VendorDescription: "",
+
+		// SIP response information
+		StatusCode:   0,
+		ReasonPhrase: "",
+		HeadersCount: 0,
+
+		// Important SIP headers
+		UserAgent: "",
+		Server:    "",
+		Allow:     "",
+		Supported: "",
+		Contact:   "",
+
+		// Protocol information
+		StandardPort: 5060,
+		SecurePort:   5061,
+		Transport:    []string{"UDP", "TCP", "TLS"},
+		Methods:      []string{"INVITE", "ACK", "BYE", "CANCEL", "REGISTER", "OPTIONS"},
+
+		// Detection metadata
+		DetectionMethod: "OPTIONS",
+		ResponseTime:    0,
+	}
+
+	// Add vendor information if available
 	if vendor != nil {
-		serviceName = fmt.Sprintf("%s (%s %s)", SIP, vendor.Name, vendor.Product)
-		if vendor.Version != "" {
-			serviceName = fmt.Sprintf("%s (%s %s %s)", SIP, vendor.Name, vendor.Product, vendor.Version)
-		}
+		serviceSIP.VendorName = vendor.Name
+		serviceSIP.VendorProduct = vendor.Product
+		serviceSIP.VendorVersion = vendor.Version
+		serviceSIP.VendorConfidence = vendor.Confidence
+		serviceSIP.VendorMethod = vendor.Method
+		serviceSIP.VendorDescription = vendor.Description
 	}
 
-	service := &plugins.Service{
-		Name:     serviceName,
-		Protocol: plugins.UDP, // SIP commonly uses UDP, but can also use TCP
-		Port:     target.Port,
-		Host:     target.Host,
-		TLS:      false,
-		Details:  make(map[string]interface{}),
-	}
-
-	// Add vendor information
-	if vendor != nil {
-		service.Details["vendor"] = map[string]interface{}{
-			"name":        vendor.Name,
-			"product":     vendor.Product,
-			"version":     vendor.Version,
-			"confidence":  vendor.Confidence,
-			"method":      vendor.Method,
-			"description": vendor.Description,
-		}
-	}
-
-	// Add SIP response information
+	// Add SIP response information if available
 	if response != nil {
-		service.Details["sip_response"] = map[string]interface{}{
-			"status_code":   response.StatusCode,
-			"reason_phrase": response.ReasonPhrase,
-			"headers_count": len(response.Headers),
-		}
+		serviceSIP.StatusCode = response.StatusCode
+		serviceSIP.ReasonPhrase = response.ReasonPhrase
+		serviceSIP.HeadersCount = len(response.Headers)
 
 		// Add important headers
-		importantHeaders := []string{"user-agent", "server", "allow", "supported", "contact"}
-		headers := make(map[string]string)
-		for _, header := range importantHeaders {
-			if value, exists := response.Headers[header]; exists {
-				headers[header] = value
-			}
+		if userAgent, exists := response.Headers["user-agent"]; exists {
+			serviceSIP.UserAgent = userAgent
 		}
-		if len(headers) > 0 {
-			service.Details["sip_headers"] = headers
+		if server, exists := response.Headers["server"]; exists {
+			serviceSIP.Server = server
+		}
+		if allow, exists := response.Headers["allow"]; exists {
+			serviceSIP.Allow = allow
+		}
+		if supported, exists := response.Headers["supported"]; exists {
+			serviceSIP.Supported = supported
+		}
+		if contact, exists := response.Headers["contact"]; exists {
+			serviceSIP.Contact = contact
 		}
 	}
 
-	// Add protocol information
-	service.Details["protocol_info"] = map[string]interface{}{
-		"standard_port": 5060,
-		"secure_port":   5061,
-		"transport":     []string{"UDP", "TCP", "TLS"},
-		"methods":       []string{"INVITE", "ACK", "BYE", "CANCEL", "REGISTER", "OPTIONS"},
-	}
-
-	return service
+	return plugins.CreateServiceFrom(target, serviceSIP, false, "", plugins.UDP)
 }
 
+// Fixed Run function for SIP plugin
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	/**
 	 * Comprehensive SIP Server Detection and Vendor Identification
@@ -720,8 +729,9 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 
 	// Extract target host for SIP message construction
 	targetHost := target.Host
-	if target.Port != 5060 {
-		targetHost = fmt.Sprintf("%s:%d", target.Host, target.Port)
+	targetPort := int(target.Address.Port())
+	if targetPort != 5060 {
+		targetHost = fmt.Sprintf("%s:%d", target.Host, targetPort)
 	}
 
 	// Attempt vendor detection
