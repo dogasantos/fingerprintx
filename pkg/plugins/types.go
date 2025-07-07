@@ -1103,6 +1103,7 @@ type ServiceZabbixAgent struct {
 
 func (e ServiceSIP) Type() string { return ProtoSIP }
 
+// Enhanced ServiceSIP struct for types.go
 type ServiceSIP struct {
 	// Vendor information
 	VendorName        string `json:"vendorName,omitempty"`
@@ -1133,4 +1134,24 @@ type ServiceSIP struct {
 	// Detection metadata
 	DetectionMethod string `json:"detectionMethod,omitempty"`
 	ResponseTime    int64  `json:"responseTime,omitempty"` // in milliseconds
+
+	// Security features (passive detection)
+	AuthenticationRequired bool     `json:"authenticationRequired,omitempty"`
+	AuthenticationMethods  []string `json:"authenticationMethods,omitempty"`
+	TLSSupported           bool     `json:"tlsSupported,omitempty"`
+	SecurityHeaders        []string `json:"securityHeaders,omitempty"`
+	EncryptionSupported    []string `json:"encryptionSupported,omitempty"`
+
+	// Device fingerprinting
+	DeviceType      string   `json:"deviceType,omitempty"`
+	DeviceModel     string   `json:"deviceModel,omitempty"`
+	FirmwareVersion string   `json:"firmwareVersion,omitempty"`
+	SupportedCodecs []string `json:"supportedCodecs,omitempty"`
+	HeaderOrder     []string `json:"headerOrder,omitempty"`
+
+	// Configuration analysis
+	AllowedMethods      []string `json:"allowedMethods,omitempty"`
+	SupportedExtensions []string `json:"supportedExtensions,omitempty"`
+	SecurityPolicies    []string `json:"securityPolicies,omitempty"`
+	TransportSecurity   []string `json:"transportSecurity,omitempty"`
 }

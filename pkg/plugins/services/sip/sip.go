@@ -478,6 +478,285 @@ func analyzeUserAgent(response *SIPResponse) *VendorInfo {
 	return nil
 }
 
+// analyzeSecurityFeatures analyzes SIP response for security features
+func analyzeSecurityFeatures(response *SIPResponse) (bool, []string, bool, []string, []string) {
+	authRequired := false
+	authMethods := []string{}
+	tlsSupported := false
+	securityHeaders := []string{}
+	encryptionSupported := []string{}
+
+	// Check for authentication requirements
+	if response.StatusCode == 401 || response.StatusCode == 407 {
+		authRequired = true
+
+		// Analyze WWW-Authenticate or Proxy-Authenticate headers
+		if wwwAuth, exists := response.Headers["www-authenticate"]; exists {
+			authMethods = append(authMethods, extractAuthMethods(wwwAuth)...)
+		}
+		if proxyAuth, exists := response.Headers["proxy-authenticate"]; exists {
+			authMethods = append(authMethods, extractAuthMethods(proxyAuth)...)
+		}
+	}
+
+	// Check for TLS/SIPS support
+	if contact, exists := response.Headers["contact"]; exists {
+		if strings.Contains(strings.ToLower(contact), "sips:") {
+			tlsSupported = true
+		}
+	}
+
+	// Analyze security-related headers
+	securityHeaderNames := []string{
+		"security-client", "security-server", "security-verify",
+		"require", "proxy-require", "supported",
+	}
+
+	for _, headerName := range securityHeaderNames {
+		if value, exists := response.Headers[headerName]; exists {
+			securityHeaders = append(securityHeaders, fmt.Sprintf("%s: %s", headerName, value))
+		}
+	}
+
+	// Check for encryption support in Supported header
+	if supported, exists := response.Headers["supported"]; exists {
+		encryptionSupported = extractEncryptionFeatures(supported)
+	}
+
+	return authRequired, authMethods, tlsSupported, securityHeaders, encryptionSupported
+}
+
+// analyzeDeviceFingerprint performs passive device fingerprinting
+func analyzeDeviceFingerprint(response *SIPResponse) (string, string, string, []string, []string) {
+	deviceType := ""
+	deviceModel := ""
+	firmwareVersion := ""
+	supportedCodecs := []string{}
+	headerOrder := []string{}
+
+	// Analyze User-Agent for device information
+	if userAgent, exists := response.Headers["user-agent"]; exists {
+		deviceInfo := extractDeviceInfo(userAgent)
+		if dt, ok := deviceInfo["deviceType"].(string); ok {
+			deviceType = dt
+		}
+		if dm, ok := deviceInfo["deviceModel"].(string); ok {
+			deviceModel = dm
+		}
+		if fv, ok := deviceInfo["firmwareVersion"].(string); ok {
+			firmwareVersion = fv
+		}
+	}
+
+	// Extract supported codecs from SDP (if present in response body)
+	if response.Body != "" && strings.Contains(response.Body, "m=audio") {
+		supportedCodecs = extractCodecsFromSDP(response.Body)
+	}
+
+	// Analyze header order for fingerprinting
+	headerOrder = extractHeaderOrder(response.RawResponse)
+
+	return deviceType, deviceModel, firmwareVersion, supportedCodecs, headerOrder
+}
+
+// analyzeConfiguration analyzes SIP configuration from response
+func analyzeConfiguration(response *SIPResponse) ([]string, []string, []string, []string) {
+	allowedMethods := []string{}
+	supportedExtensions := []string{}
+	securityPolicies := []string{}
+	transportSecurity := []string{}
+
+	// Extract allowed methods
+	if allow, exists := response.Headers["allow"]; exists {
+		methods := strings.Split(allow, ",")
+		for i, method := range methods {
+			allowedMethods = append(allowedMethods, strings.TrimSpace(method))
+		}
+	}
+
+	// Extract supported extensions
+	if supported, exists := response.Headers["supported"]; exists {
+		extensions := strings.Split(supported, ",")
+		for i, ext := range extensions {
+			supportedExtensions = append(supportedExtensions, strings.TrimSpace(ext))
+		}
+	}
+
+	// Analyze security policies from various headers
+	if require, exists := response.Headers["require"]; exists {
+		securityPolicies = append(securityPolicies, "Require: "+require)
+	}
+
+	if proxyRequire, exists := response.Headers["proxy-require"]; exists {
+		securityPolicies = append(securityPolicies, "Proxy-Require: "+proxyRequire)
+	}
+
+	// Analyze transport security options
+	// Check Via headers for transport security
+	if via, exists := response.Headers["via"]; exists {
+		if strings.Contains(strings.ToUpper(via), "TLS") {
+			transportSecurity = append(transportSecurity, "TLS")
+		}
+		if strings.Contains(strings.ToUpper(via), "WSS") {
+			transportSecurity = append(transportSecurity, "WebSocket Secure")
+		}
+	}
+
+	// Check Contact header for transport security
+	if contact, exists := response.Headers["contact"]; exists {
+		if strings.Contains(strings.ToLower(contact), "sips:") {
+			transportSecurity = append(transportSecurity, "SIPS")
+		}
+	}
+
+	return allowedMethods, supportedExtensions, securityPolicies, transportSecurity
+}
+
+// Helper functions for extraction
+
+func extractAuthMethods(authHeader string) []string {
+	methods := []string{}
+
+	// Common authentication methods
+	authTypes := map[string]string{
+		"digest": "Digest",
+		"basic":  "Basic",
+		"ntlm":   "NTLM",
+		"md5":    "MD5",
+	}
+
+	authLower := strings.ToLower(authHeader)
+	for key, value := range authTypes {
+		if strings.Contains(authLower, key) {
+			methods = append(methods, value)
+		}
+	}
+
+	return methods
+}
+
+func extractEncryptionFeatures(supported string) []string {
+	features := []string{}
+
+	encryptionKeywords := map[string]string{
+		"srtp":     "SRTP",
+		"tls":      "TLS",
+		"dtls":     "DTLS",
+		"sdes":     "SDES",
+		"mikey":    "MIKEY",
+		"security": "Security Extensions",
+	}
+
+	supportedLower := strings.ToLower(supported)
+	for key, value := range encryptionKeywords {
+		if strings.Contains(supportedLower, key) {
+			features = append(features, value)
+		}
+	}
+
+	return features
+}
+
+func extractDeviceInfo(userAgent string) map[string]interface{} {
+	info := make(map[string]interface{})
+
+	// Device type patterns
+	devicePatterns := map[string]string{
+		"phone":     "IP Phone",
+		"softphone": "Softphone",
+		"gateway":   "Gateway",
+		"pbx":       "PBX",
+		"server":    "Server",
+		"client":    "Client",
+	}
+
+	userAgentLower := strings.ToLower(userAgent)
+	for pattern, deviceType := range devicePatterns {
+		if strings.Contains(userAgentLower, pattern) {
+			info["deviceType"] = deviceType
+			break
+		}
+	}
+
+	// Extract model information using regex
+	modelPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(\w+)-(\w+\d+)`),        // Brand-Model123
+		regexp.MustCompile(`(?i)(\w+)\s+(\w+\d+)`),      // Brand Model123
+		regexp.MustCompile(`(?i)(\w+)/(\d+\.\d+\.\d+)`), // Software/Version
+	}
+
+	for _, pattern := range modelPatterns {
+		if matches := pattern.FindStringSubmatch(userAgent); matches != nil {
+			if len(matches) >= 3 {
+				info["deviceModel"] = fmt.Sprintf("%s %s", matches[1], matches[2])
+				break
+			}
+		}
+	}
+
+	// Extract firmware/software version
+	versionPatterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)version[:\s]+(\d+\.\d+\.\d+)`),
+		regexp.MustCompile(`(?i)fw[:\s]+(\d+\.\d+\.\d+)`),
+		regexp.MustCompile(`(?i)(\d+\.\d+\.\d+\.\d+)`),
+	}
+
+	for _, pattern := range versionPatterns {
+		if matches := pattern.FindStringSubmatch(userAgent); matches != nil {
+			if len(matches) >= 2 {
+				info["firmwareVersion"] = matches[1]
+				break
+			}
+		}
+	}
+
+	return info
+}
+
+func extractCodecsFromSDP(sdp string) []string {
+	codecs := []string{}
+
+	// Extract codecs from SDP m= and a=rtpmap lines
+	lines := strings.Split(sdp, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Parse a=rtpmap lines for codec information
+		if strings.HasPrefix(line, "a=rtpmap:") {
+			parts := strings.Split(line, " ")
+			if len(parts) >= 2 {
+				codecInfo := parts[1]
+				codecName := strings.Split(codecInfo, "/")[0]
+				codecs = append(codecs, codecName)
+			}
+		}
+	}
+
+	return codecs
+}
+
+func extractHeaderOrder(rawResponse string) []string {
+	headers := []string{}
+
+	lines := strings.Split(rawResponse, "\r\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue // Skip status line
+		}
+		if line == "" {
+			break // End of headers
+		}
+
+		colonIndex := strings.Index(line, ":")
+		if colonIndex > 0 {
+			headerName := strings.TrimSpace(line[:colonIndex])
+			headers = append(headers, headerName)
+		}
+	}
+
+	return headers
+}
+
 // analyzeResponsePatterns analyzes response patterns for vendor identification
 func analyzeResponsePatterns(response *SIPResponse) *VendorInfo {
 	// Analyze Allow header for method support patterns
@@ -527,29 +806,6 @@ func analyzeResponsePatterns(response *SIPResponse) *VendorInfo {
 	return nil
 }
 
-// analyzeTimingBehavior analyzes response timing for vendor identification
-func analyzeTimingBehavior(responseTime time.Duration) *VendorInfo {
-	if responseTime < 50*time.Millisecond {
-		return &VendorInfo{
-			Name:        "Unknown",
-			Product:     "Fast SIP Implementation",
-			Confidence:  25,
-			Method:      "Timing Analysis",
-			Description: "Very fast response suggests optimized implementation",
-		}
-	} else if responseTime > 500*time.Millisecond {
-		return &VendorInfo{
-			Name:        "Unknown",
-			Product:     "Slow SIP Implementation",
-			Confidence:  25,
-			Method:      "Timing Analysis",
-			Description: "Slow response suggests complex processing or high load",
-		}
-	}
-
-	return nil
-}
-
 // detectSIPVendor performs comprehensive vendor detection
 func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*VendorInfo, *SIPResponse, error) {
 	// Get source IP for SIP message construction
@@ -561,9 +817,7 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*Vend
 
 	// Method 1: OPTIONS probe (most reliable for capability detection)
 	optionsRequest := createOPTIONSRequest(target, sourceIP)
-	start := time.Now()
 	response, err := utils.SendRecv(conn, []byte(optionsRequest), timeout)
-	responseTime := time.Since(start)
 
 	if err == nil && len(response) > 0 {
 		parsedResponse, parseErr := parseSIPResponse(string(response))
@@ -581,22 +835,13 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*Vend
 					bestVendor = vendor
 				}
 			}
-
-			// Analyze timing if no other method worked
-			if bestVendor == nil {
-				if vendor := analyzeTimingBehavior(responseTime); vendor != nil {
-					bestVendor = vendor
-				}
-			}
 		}
 	}
 
 	// Method 2: INVITE probe (if OPTIONS failed or no vendor detected)
 	if bestVendor == nil || bestVendor.Confidence < 70 {
 		inviteRequest := createINVITERequest(target, sourceIP)
-		start = time.Now()
 		response, err = utils.SendRecv(conn, []byte(inviteRequest), timeout)
-		responseTime = time.Since(start)
 
 		if err == nil && len(response) > 0 {
 			parsedResponse, parseErr := parseSIPResponse(string(response))
@@ -618,13 +863,6 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*Vend
 						bestVendor = vendor
 					}
 				}
-
-				// Analyze timing
-				if bestVendor == nil {
-					if vendor := analyzeTimingBehavior(responseTime); vendor != nil {
-						bestVendor = vendor
-					}
-				}
 			}
 		}
 	}
@@ -632,6 +870,7 @@ func detectSIPVendor(conn net.Conn, timeout time.Duration, target string) (*Vend
 	return bestVendor, sipResponse, nil
 }
 
+// Enhanced createServiceWithVendorInfo function
 func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, response *SIPResponse) *plugins.Service {
 	// Create ServiceSIP struct with vendor information
 	serviceSIP := plugins.ServiceSIP{
@@ -664,6 +903,26 @@ func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, resp
 		// Detection metadata
 		DetectionMethod: "OPTIONS",
 		ResponseTime:    0,
+
+		// Security features (passive detection)
+		AuthenticationRequired: false,
+		AuthenticationMethods:  []string{},
+		TLSSupported:           false,
+		SecurityHeaders:        []string{},
+		EncryptionSupported:    []string{},
+
+		// Device fingerprinting
+		DeviceType:      "",
+		DeviceModel:     "",
+		FirmwareVersion: "",
+		SupportedCodecs: []string{},
+		HeaderOrder:     []string{},
+
+		// Configuration analysis
+		AllowedMethods:      []string{},
+		SupportedExtensions: []string{},
+		SecurityPolicies:    []string{},
+		TransportSecurity:   []string{},
 	}
 
 	// Add vendor information if available
@@ -698,22 +957,45 @@ func createServiceWithVendorInfo(target plugins.Target, vendor *VendorInfo, resp
 		if contact, exists := response.Headers["contact"]; exists {
 			serviceSIP.Contact = contact
 		}
+
+		// Perform passive security analysis
+		authRequired, authMethods, tlsSupported, securityHeaders, encryptionSupported := analyzeSecurityFeatures(response)
+		serviceSIP.AuthenticationRequired = authRequired
+		serviceSIP.AuthenticationMethods = authMethods
+		serviceSIP.TLSSupported = tlsSupported
+		serviceSIP.SecurityHeaders = securityHeaders
+		serviceSIP.EncryptionSupported = encryptionSupported
+
+		// Perform device fingerprinting
+		deviceType, deviceModel, firmwareVersion, supportedCodecs, headerOrder := analyzeDeviceFingerprint(response)
+		serviceSIP.DeviceType = deviceType
+		serviceSIP.DeviceModel = deviceModel
+		serviceSIP.FirmwareVersion = firmwareVersion
+		serviceSIP.SupportedCodecs = supportedCodecs
+		serviceSIP.HeaderOrder = headerOrder
+
+		// Analyze configuration
+		allowedMethods, supportedExtensions, securityPolicies, transportSecurity := analyzeConfiguration(response)
+		serviceSIP.AllowedMethods = allowedMethods
+		serviceSIP.SupportedExtensions = supportedExtensions
+		serviceSIP.SecurityPolicies = securityPolicies
+		serviceSIP.TransportSecurity = transportSecurity
 	}
 
 	return plugins.CreateServiceFrom(target, serviceSIP, false, "", plugins.UDP)
 }
 
-// Fixed Run function for SIP plugin
 func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
 	/**
-	 * Comprehensive SIP Server Detection and Vendor Identification
+	 * Comprehensive SIP Server Detection and Vendor Identification with Enhanced Security Analysis
 	 *
 	 * This plugin performs multi-stage SIP detection and vendor identification:
 	 * 1. OPTIONS probe for capability discovery and vendor identification
 	 * 2. INVITE probe for detailed analysis (if needed)
 	 * 3. User-Agent/Server header analysis for precise vendor identification
 	 * 4. Response pattern analysis for implementation characteristics
-	 * 5. Timing behavior analysis for additional fingerprinting
+	 * 5. Passive security feature analysis
+	 * 6. Device fingerprinting and configuration analysis
 	 *
 	 * Supported vendor detection:
 	 * - Asterisk PBX (Open Source)
@@ -725,6 +1007,13 @@ func (p *Plugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target
 	 * - OpenSIPS/Kamailio (SIP Servers)
 	 * - Hardware phones (Grandstream, Polycom, Yealink, Snom)
 	 * - Software clients (X-Lite, Linphone, Zoiper)
+	 *
+	 * Enhanced Features:
+	 * - Passive security analysis (authentication, encryption, TLS support)
+	 * - Device fingerprinting (device type, model, firmware version)
+	 * - Configuration analysis (allowed methods, supported extensions)
+	 * - Codec detection from SDP analysis
+	 * - Header order analysis for fingerprinting
 	 */
 
 	// Extract target host for SIP message construction
