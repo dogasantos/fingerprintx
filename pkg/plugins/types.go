@@ -920,55 +920,43 @@ func (e ServiceWinRM) Type() string { return ProtoWINRM }
 
 type ServiceWinRM struct {
 	// Basic Information
-	Product string `json:"product"`
-	Version string `json:"version,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Product  string `json:"product"`
+	Protocol string `json:"protocol,omitempty"`
 
 	// Server Information
-	ServerType   string `json:"serverType,omitempty"`
-	ComputerName string `json:"computerName,omitempty"`
-	Domain       string `json:"domain,omitempty"`
-	FQDN         string `json:"fqdn,omitempty"`
+	ServerType       string `json:"serverType,omitempty"`
+	ArchitectureBits int    `json:"architectureBits,omitempty"`
 
-	// Detailed OS Information
-	OSVersion    string `json:"osVersion,omitempty"`    // e.g., "Windows Server 2016"
-	OSBuild      string `json:"osBuild,omitempty"`      // e.g., "10.0.14393"
-	OSRelease    string `json:"osRelease,omitempty"`    // e.g., "1607"
-	OSEdition    string `json:"osEdition,omitempty"`    // e.g., "Standard", "Datacenter"
-	Architecture string `json:"architecture,omitempty"` // e.g., "x64", "x86"
+	// OS Information
+	OSVersion string `json:"osVersion,omitempty"`
+	OSBuild   string `json:"osBuild,omitempty"`
+	OSRelease string `json:"osRelease,omitempty"`
 
-	// NetBIOS Information
-	NetBIOSName   string `json:"netbiosName,omitempty"`   // NetBIOS computer name
-	NetBIOSDomain string `json:"netbiosDomain,omitempty"` // NetBIOS domain name
-	DNSName       string `json:"dnsName,omitempty"`       // DNS computer name
-	DNSDomain     string `json:"dnsDomain,omitempty"`     // DNS domain name
-	TreeName      string `json:"treeName,omitempty"`      // DNS tree name
+	// System Information
+	ComputerName  string `json:"computerName,omitempty"`
+	Domain        string `json:"domain,omitempty"`
+	NetBIOSName   string `json:"netbiosName,omitempty"`
+	NetBIOSDomain string `json:"netbiosDomain,omitempty"`
+	DNSName       string `json:"dnsName,omitempty"`
+	DNSDomain     string `json:"dnsDomain,omitempty"`
+	TreeName      string `json:"treeName,omitempty"`
+	FQDN          string `json:"fqdn,omitempty"`
+	Architecture  string `json:"architecture,omitempty"`
 
-	// Protocol Information
-	Protocol     string `json:"protocol,omitempty"`     // HTTP or HTTPS
-	WSManVersion string `json:"wsmanVersion,omitempty"` // WS-Management version
-	SOAPVersion  string `json:"soapVersion,omitempty"`  // SOAP version
+	// Product Information (from SOAP responses)
+	ProductVendor   string `json:"productVendor,omitempty"`
+	ProductVersion  string `json:"productVersion,omitempty"`
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
 
 	// Authentication
-	AuthMethods []string `json:"authMethods,omitempty"` // Supported auth methods
-	Anonymous   bool     `json:"anonymous"`             // Anonymous access allowed
-	Vulnerable  bool     `json:"vulnerable"`            // Security vulnerabilities
+	AuthMethods []string `json:"authMethods,omitempty"`
+	Anonymous   bool     `json:"anonymous"`
+	Vulnerable  bool     `json:"vulnerable"`
 
-	// Endpoints
-	Endpoints []string `json:"endpoints,omitempty"` // Available WinRM endpoints
+	// Security
+	Encryption string `json:"encryption,omitempty"`
 
-	// Security Features
-	Encryption  string `json:"encryption,omitempty"`  // Encryption status
-	Certificate string `json:"certificate,omitempty"` // SSL certificate info
-
-	// Configuration
-	MaxEnvelope int `json:"maxEnvelopeSize,omitempty"` // Max SOAP envelope size
-	MaxTimeout  int `json:"maxTimeout,omitempty"`      // Max operation timeout
-	MaxShells   int `json:"maxShells,omitempty"`       // Max concurrent shells
-
-	// Additional Information
-	PowerShell  bool `json:"powershell,omitempty"`  // PowerShell remoting enabled
-	RemoteShell bool `json:"remoteShell,omitempty"` // Remote shell access
-
-	// Timestamp Information
-	ServerTime string `json:"serverTime,omitempty"` // Server timestamp from NTLM
+	// Timing
+	ServerTime string `json:"serverTime,omitempty"`
 }
