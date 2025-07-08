@@ -1,10 +1,25 @@
+// Copyright 2022 Praetorian Security, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package mongodb
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -195,91 +210,6 @@ func parseBSONInt32(data []byte, offset int) (int32, int, error) {
 	return value, offset + 4, nil
 }
 
-// parseBSONInt64 parses a BSON int64 from data at offset
-func parseBSONInt64(data []byte, offset int) (int64, int, error) {
-	if offset+8 > len(data) {
-		return 0, 0, fmt.Errorf("insufficient data for int64")
-	}
-
-	value := int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
-	return value, offset + 8, nil
-}
-
-// parseBSONBoolean parses a BSON boolean from data at offset
-func parseBSONBoolean(data []byte, offset int) (bool, int, error) {
-	if offset+1 > len(data) {
-		return false, 0, fmt.Errorf("insufficient data for boolean")
-	}
-
-	value := data[offset] != 0
-	return value, offset + 1, nil
-}
-
-// parseBSONArray parses a BSON array from data at offset
-func parseBSONArray(data []byte, offset int) ([]interface{}, int, error) {
-	if offset+4 >= len(data) {
-		return nil, 0, fmt.Errorf("insufficient data for array length")
-	}
-
-	// Read array length
-	arrayLen := binary.LittleEndian.Uint32(data[offset : offset+4])
-	if arrayLen < 5 || arrayLen > 1024*1024 { // Sanity check
-		return nil, 0, fmt.Errorf("invalid array length: %d", arrayLen)
-	}
-
-	arrayEnd := offset + int(arrayLen)
-	if arrayEnd > len(data) {
-		return nil, 0, fmt.Errorf("insufficient data for array content")
-	}
-
-	var values []interface{}
-	currentOffset := offset + 4
-
-	// Parse array elements
-	for currentOffset < arrayEnd-1 { // -1 for terminator
-		elementType := data[currentOffset]
-		currentOffset++
-
-		// Read element name (array indices like "0", "1", etc.)
-		nameEnd := currentOffset
-		for nameEnd < arrayEnd && data[nameEnd] != 0 {
-			nameEnd++
-		}
-		if nameEnd >= arrayEnd {
-			break
-		}
-		currentOffset = nameEnd + 1 // Skip null terminator
-
-		// Parse element value based on type
-		var value interface{}
-		var err error
-
-		switch elementType {
-		case BSONTypeString:
-			value, currentOffset, err = parseBSONString(data, currentOffset)
-		case BSONTypeInt32:
-			value, currentOffset, err = parseBSONInt32(data, currentOffset)
-		case BSONTypeInt64:
-			value, currentOffset, err = parseBSONInt64(data, currentOffset)
-		case BSONTypeBoolean:
-			value, currentOffset, err = parseBSONBoolean(data, currentOffset)
-		default:
-			// Skip unknown types
-			break
-		}
-
-		if err != nil {
-			break
-		}
-
-		if value != nil {
-			values = append(values, value)
-		}
-	}
-
-	return values, arrayEnd, nil
-}
-
 // parseBSONDocument parses a BSON document and returns key-value pairs
 func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, error) {
 	if offset+4 >= len(data) {
@@ -288,6 +218,8 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 
 	// Read document length
 	docLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	log.Printf("MONGODB DEBUG: Document length: %d", docLen)
+
 	if docLen < 5 || docLen > 16*1024*1024 { // Sanity check
 		return nil, 0, fmt.Errorf("invalid document length: %d", docLen)
 	}
@@ -300,7 +232,10 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 	result := make(map[string]interface{})
 	currentOffset := offset + 4
 
+	log.Printf("MONGODB DEBUG: Starting to parse document elements from offset %d to %d", currentOffset, docEnd)
+
 	// Parse document elements
+	elementCount := 0
 	for currentOffset < docEnd-1 { // -1 for terminator
 		if currentOffset >= len(data) {
 			break
@@ -308,8 +243,11 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 
 		elementType := data[currentOffset]
 		if elementType == 0 { // Document terminator
+			log.Printf("MONGODB DEBUG: Found document terminator at offset %d", currentOffset)
 			break
 		}
+
+		log.Printf("MONGODB DEBUG: Element %d - Type: 0x%02x at offset %d", elementCount, elementType, currentOffset)
 		currentOffset++
 
 		// Read element name
@@ -319,11 +257,14 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 			nameEnd++
 		}
 		if nameEnd >= docEnd {
+			log.Printf("MONGODB DEBUG: Element name extends beyond document end")
 			break
 		}
 
 		elementName := string(data[nameStart:nameEnd])
 		currentOffset = nameEnd + 1 // Skip null terminator
+
+		log.Printf("MONGODB DEBUG: Element name: '%s'", elementName)
 
 		// Parse element value based on type
 		var value interface{}
@@ -332,17 +273,16 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 		switch elementType {
 		case BSONTypeString:
 			value, currentOffset, err = parseBSONString(data, currentOffset)
+			if err == nil {
+				log.Printf("MONGODB DEBUG: String value: '%s'", value)
+			}
 		case BSONTypeInt32:
 			value, currentOffset, err = parseBSONInt32(data, currentOffset)
-		case BSONTypeInt64:
-			value, currentOffset, err = parseBSONInt64(data, currentOffset)
-		case BSONTypeBoolean:
-			value, currentOffset, err = parseBSONBoolean(data, currentOffset)
-		case BSONTypeArray:
-			value, currentOffset, err = parseBSONArray(data, currentOffset)
-		case BSONTypeDocument:
-			value, currentOffset, err = parseBSONDocument(data, currentOffset)
+			if err == nil {
+				log.Printf("MONGODB DEBUG: Int32 value: %d", value)
+			}
 		default:
+			log.Printf("MONGODB DEBUG: Skipping unknown element type 0x%02x", elementType)
 			// Skip unknown element types
 			// Try to find next element by looking for next type byte
 			for currentOffset < docEnd && currentOffset < len(data) {
@@ -355,14 +295,27 @@ func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, er
 		}
 
 		if err != nil {
-			// Skip this element and try to continue
+			log.Printf("MONGODB DEBUG: Error parsing element '%s': %v", elementName, err)
 			continue
 		}
 
 		result[elementName] = value
+		elementCount++
 	}
 
+	log.Printf("MONGODB DEBUG: Parsed %d elements total", elementCount)
+	log.Printf("MONGODB DEBUG: Final result keys: %v", getKeys(result))
+
 	return result, docEnd, nil
+}
+
+// getKeys returns the keys of a map for debugging
+func getKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // isValidMongoDBResponse validates MongoDB response
@@ -374,6 +327,8 @@ func isValidMongoDBResponse(response []byte) bool {
 	// Parse header
 	messageLength := binary.LittleEndian.Uint32(response[0:4])
 	opCode := binary.LittleEndian.Uint32(response[12:16])
+
+	log.Printf("MONGODB DEBUG: Response validation - Length: %d, OpCode: %d", messageLength, opCode)
 
 	// Validate message length
 	if messageLength < 36 || messageLength > 48*1024*1024 {
@@ -389,6 +344,8 @@ func isValidMongoDBResponse(response []byte) bool {
 	responseFlags := binary.LittleEndian.Uint32(response[16:20])
 	numberReturned := binary.LittleEndian.Uint32(response[32:36])
 
+	log.Printf("MONGODB DEBUG: Response flags: %d, Number returned: %d", responseFlags, numberReturned)
+
 	// Check for query failure
 	if responseFlags&0x02 != 0 {
 		return false
@@ -402,72 +359,12 @@ func isValidMongoDBResponse(response []byte) bool {
 	return true
 }
 
-// extractGCCVersion extracts GCC version from compiler string
-func extractGCCVersion(compilerStr string) string {
-	re := regexp.MustCompile(`gcc.*?([0-9]+\.[0-9]+\.[0-9]+)`)
-	if matches := re.FindStringSubmatch(compilerStr); len(matches) > 1 {
-		return matches[1]
-	}
-	return ""
-}
-
-// extractDatabaseNames extracts database names from listDatabases response
-func extractDatabaseNames(bsonDoc map[string]interface{}) []string {
-	var databases []string
-
-	if v, ok := bsonDoc["databases"]; ok {
-		if arr, ok := v.([]interface{}); ok {
-			for _, item := range arr {
-				if doc, ok := item.(map[string]interface{}); ok {
-					if name, ok := doc["name"]; ok {
-						if str, ok := name.(string); ok {
-							databases = append(databases, str)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return databases
-}
-
-// checkVulnerability checks if MongoDB is vulnerable (auth disabled + can list databases)
-func checkVulnerability(conn net.Conn, timeout time.Duration, authDisabled bool) (bool, []string) {
-	if !authDisabled {
-		return false, nil
-	}
-
-	// Try to list databases
-	requestID := int32(100)
-	message := createMongoDBQuery("listDatabases", requestID)
-	if message == nil {
-		return false, nil
-	}
-
-	response, err := utils.SendRecv(conn, message, timeout)
-	if err != nil || len(response) == 0 || !isValidMongoDBResponse(response) {
-		return false, nil
-	}
-
-	// Parse response
-	bsonDoc, _, err := parseBSONDocument(response, 36)
-	if err != nil {
-		return false, nil
-	}
-
-	// Extract database names
-	databases := extractDatabaseNames(bsonDoc)
-	if len(databases) > 0 {
-		return true, databases // Vulnerable: can list databases without auth
-	}
-
-	return false, nil
-}
-
 // parseMongoDBResponse extracts information from MongoDB response and populates structured fields
 func parseMongoDBResponse(response []byte, command string, conn net.Conn, timeout time.Duration) plugins.ServiceMongoDB {
 	result := plugins.ServiceMongoDB{}
+
+	log.Printf("MONGODB DEBUG: Parsing response for command '%s', length: %d", command, len(response))
+	log.Printf("MONGODB DEBUG: Response hex (first 100 bytes): %s", hex.EncodeToString(response[:min(100, len(response))]))
 
 	// Skip OP_REPLY header (36 bytes) to get to BSON document
 	if len(response) < 36 {
@@ -475,166 +372,42 @@ func parseMongoDBResponse(response []byte, command string, conn net.Conn, timeou
 		return result
 	}
 
+	log.Printf("MONGODB DEBUG: Skipping OP_REPLY header, starting BSON parsing at offset 36")
+
 	// Parse BSON document
 	bsonDoc, _, err := parseBSONDocument(response, 36)
 	if err != nil {
+		log.Printf("MONGODB DEBUG: BSON parsing error: %v", err)
 		result.Product = "mongodb"
 		return result
+	}
+
+	log.Printf("MONGODB DEBUG: Successfully parsed BSON document with %d fields", len(bsonDoc))
+
+	// Debug: Print all found fields
+	for key, value := range bsonDoc {
+		log.Printf("MONGODB DEBUG: Found field '%s' = %v (type: %T)", key, value, value)
 	}
 
 	// Extract basic information
 	if v, ok := bsonDoc["version"]; ok {
 		if str, ok := v.(string); ok {
 			result.Version = str
+			log.Printf("MONGODB DEBUG: Extracted version: %s", str)
 		}
 	}
 
 	if v, ok := bsonDoc["gitVersion"]; ok {
 		if str, ok := v.(string); ok {
 			result.GitVersion = str
+			log.Printf("MONGODB DEBUG: Extracted gitVersion: %s", str)
 		}
 	}
 
 	if v, ok := bsonDoc["allocator"]; ok {
 		if str, ok := v.(string); ok {
 			result.Allocator = str
-		}
-	}
-
-	if v, ok := bsonDoc["javascriptEngine"]; ok {
-		if str, ok := v.(string); ok {
-			result.JavaScriptEngine = str
-		}
-	}
-
-	// Extract numeric fields
-	if v, ok := bsonDoc["maxBsonObjectSize"]; ok {
-		if num, ok := v.(int32); ok {
-			result.MaxBSONSize = int(num)
-		}
-	}
-
-	if v, ok := bsonDoc["bits"]; ok {
-		if num, ok := v.(int32); ok {
-			result.ArchitectureBits = int(num)
-		}
-	}
-
-	if v, ok := bsonDoc["debug"]; ok {
-		if b, ok := v.(bool); ok {
-			result.DebugBuild = b
-		}
-	}
-
-	// Extract storage engines
-	if v, ok := bsonDoc["storageEngines"]; ok {
-		if arr, ok := v.([]interface{}); ok {
-			for _, item := range arr {
-				if str, ok := item.(string); ok {
-					result.StorageEngines = append(result.StorageEngines, str)
-				}
-			}
-		}
-	}
-
-	// Extract modules
-	if v, ok := bsonDoc["modules"]; ok {
-		if arr, ok := v.([]interface{}); ok {
-			for _, item := range arr {
-				if str, ok := item.(string); ok {
-					result.Modules = append(result.Modules, str)
-				}
-			}
-		}
-	}
-
-	// Extract version array
-	if v, ok := bsonDoc["versionArray"]; ok {
-		if arr, ok := v.([]interface{}); ok {
-			for _, item := range arr {
-				if num, ok := item.(int32); ok {
-					result.VersionArray = append(result.VersionArray, int(num))
-				}
-			}
-		}
-	}
-
-	// Extract build environment
-	if v, ok := bsonDoc["buildEnvironment"]; ok {
-		if doc, ok := v.(map[string]interface{}); ok {
-			if arch, ok := doc["distarch"]; ok {
-				if str, ok := arch.(string); ok {
-					result.BuildArch = str
-				}
-			}
-			if arch, ok := doc["target_arch"]; ok && result.BuildArch == "" {
-				if str, ok := arch.(string); ok {
-					result.BuildArch = str
-				}
-			}
-			if os, ok := doc["target_os"]; ok {
-				if str, ok := os.(string); ok {
-					result.BuildOS = str
-				}
-			}
-			if distmod, ok := doc["distmod"]; ok {
-				if str, ok := distmod.(string); ok {
-					result.BuildDistmod = str
-				}
-			}
-			if cc, ok := doc["cc"]; ok {
-				if str, ok := cc.(string); ok {
-					result.GCCVersion = extractGCCVersion(str)
-				}
-			}
-			if cxxflags, ok := doc["cxxflags"]; ok {
-				if str, ok := cxxflags.(string); ok {
-					result.CXXFlags = str
-				}
-			}
-			if linkflags, ok := doc["linkflags"]; ok {
-				if str, ok := linkflags.(string); ok {
-					result.LinkFlags = str
-				}
-			}
-			if ccflags, ok := doc["ccflags"]; ok {
-				if str, ok := ccflags.(string); ok {
-					result.CCFlags = str
-				}
-			}
-		}
-	}
-
-	// Extract OpenSSL information
-	if v, ok := bsonDoc["openssl"]; ok {
-		if doc, ok := v.(map[string]interface{}); ok {
-			if compiled, ok := doc["compiled"]; ok {
-				if str, ok := compiled.(string); ok {
-					result.OpenSSLCompiled = str
-				}
-			}
-			if running, ok := doc["running"]; ok {
-				if str, ok := running.(string); ok {
-					result.OpenSSLRunning = str
-				}
-			}
-		}
-	}
-
-	// Extract cluster time
-	if v, ok := bsonDoc["$clusterTime"]; ok {
-		if doc, ok := v.(map[string]interface{}); ok {
-			if clusterTime, ok := doc["clusterTime"]; ok {
-				if str, ok := clusterTime.(string); ok {
-					result.ClusterTime = str
-				}
-			}
-		}
-	}
-
-	if v, ok := bsonDoc["operationTime"]; ok {
-		if str, ok := v.(string); ok {
-			result.OperationTime = str
+			log.Printf("MONGODB DEBUG: Extracted allocator: %s", str)
 		}
 	}
 
@@ -646,38 +419,13 @@ func parseMongoDBResponse(response []byte, command string, conn net.Conn, timeou
 		}
 	}
 
-	// Determine server role
-	if v, ok := bsonDoc["ismaster"]; ok {
-		if b, ok := v.(bool); ok && b {
-			result.ServerRole = "primary"
-		}
-	}
-	if v, ok := bsonDoc["isWritablePrimary"]; ok {
-		if b, ok := v.(bool); ok && b {
-			result.ServerRole = "primary"
-		}
-	}
-	if v, ok := bsonDoc["secondary"]; ok {
-		if b, ok := v.(bool); ok && b {
-			result.ServerRole = "secondary"
-		}
-	}
-
 	// Check authentication status
 	result.Authentication = "disabled"
 	if _, ok := bsonDoc["authInfo"]; ok {
 		result.Authentication = "enabled"
 	} else if _, ok := bsonDoc["saslSupportedMechs"]; ok {
 		result.Authentication = "partially enabled"
-	} else if _, ok := bsonDoc["authenticatedUsers"]; ok {
-		result.Authentication = "enabled"
 	}
-
-	// Check vulnerability (if auth is disabled, try to list databases)
-	authDisabled := result.Authentication == "disabled"
-	vulnerable, databases := checkVulnerability(conn, timeout, authDisabled)
-	result.Vulnerable = vulnerable
-	result.Databases = databases
 
 	// Create product banner
 	result.Product = "mongodb"
@@ -690,17 +438,17 @@ func parseMongoDBResponse(response []byte, command string, conn net.Conn, timeou
 	if result.Allocator != "" {
 		result.Product += fmt.Sprintf(" [%s]", result.Allocator)
 	}
-	if result.BuildArch != "" {
-		result.Product += fmt.Sprintf(" (%s)", result.BuildArch)
-	}
-	if result.Authentication != "disabled" {
-		result.Product += fmt.Sprintf(" [auth:%s]", result.Authentication)
-	}
-	if result.Vulnerable {
-		result.Product += " [VULNERABLE]"
-	}
+
+	log.Printf("MONGODB DEBUG: Final result - Version: '%s', Allocator: '%s', Product: '%s'", result.Version, result.Allocator, result.Product)
 
 	return result
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (p *MongoDBPlugin) PortPriority(port uint16) bool {
@@ -721,23 +469,38 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 		return nil, nil
 	}
 
+	log.Printf("MONGODB DEBUG: Starting MongoDB detection for %s", conn.RemoteAddr().String())
+
 	// Try different MongoDB commands
 	commands := []string{"hello", "isMaster", "buildInfo"}
 
 	for i, command := range commands {
+		log.Printf("MONGODB DEBUG: Trying command '%s'", command)
 		requestID := int32(i + 1)
 		message := createMongoDBQuery(command, requestID)
 		if message == nil {
 			continue
 		}
 
+		log.Printf("MONGODB DEBUG: Sending %s command (%d bytes)", command, len(message))
 		response, err := utils.SendRecv(conn, message, timeout)
-		if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
+		if err != nil {
+			log.Printf("MONGODB DEBUG: Command '%s' failed: %v", command, err)
+			continue
+		}
+
+		log.Printf("MONGODB DEBUG: Received response for '%s' (%d bytes)", command, len(response))
+
+		if len(response) > 0 && isValidMongoDBResponse(response) {
+			log.Printf("MONGODB DEBUG: Valid MongoDB response detected for command '%s'", command)
 			payload := parseMongoDBResponse(response, command, conn, timeout)
 			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		} else {
+			log.Printf("MONGODB DEBUG: Invalid or empty response for command '%s'", command)
 		}
 	}
 
+	log.Printf("MONGODB DEBUG: No valid MongoDB responses received")
 	return nil, nil
 }
 
