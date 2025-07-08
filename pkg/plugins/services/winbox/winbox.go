@@ -1,8 +1,24 @@
+// Copyright 2022 Praetorian Security, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package winbox
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -43,10 +59,18 @@ func createIndexRequest() []byte {
 	return []byte(request)
 }
 
+// createListRequest creates a request for the list file (like Shodan uses)
+func createListRequest() []byte {
+	request := "GET /list HTTP/1.1\r\n"
+	request += "Host: router\r\n"
+	request += "User-Agent: fingerprintx\r\n"
+	request += "Connection: close\r\n\r\n"
+	return []byte(request)
+}
+
 // createWinboxListRequest creates a Winbox protocol message to read the list file
 func createWinboxListRequest() []byte {
 	// Based on Tenable research - Winbox message to system binary 2 (mproxy), handler 2
-	// This is a simplified version of the list file request
 	packet := make([]byte, 32)
 
 	// Winbox header structure (6 bytes)
@@ -71,37 +95,82 @@ func createWinboxListRequest() []byte {
 	return packet
 }
 
-// isValidWinboxResponse checks if response looks like Winbox
-func isValidWinboxResponse(response []byte) bool {
+// isValidWinboxHTTPResponse checks if HTTP response is actually from RouterOS/Winbox
+func isValidWinboxHTTPResponse(response []byte) bool {
+	if len(response) < 20 {
+		return false
+	}
+
+	responseStr := strings.ToLower(string(response))
+
+	// Must be HTTP response
+	if !strings.HasPrefix(responseStr, "http/") {
+		return false
+	}
+
+	// Must contain specific RouterOS/MikroTik indicators
+	requiredIndicators := []string{"routeros", "mikrotik"}
+	hasRequired := false
+	for _, indicator := range requiredIndicators {
+		if strings.Contains(responseStr, indicator) {
+			hasRequired = true
+			break
+		}
+	}
+
+	if !hasRequired {
+		return false
+	}
+
+	// Additional validation - should contain RouterOS-specific content
+	routerosIndicators := []string{
+		"routerboard", "winbox", "webfig", "board-name",
+		"architecture", "cpu-count", "cpu-frequency",
+	}
+
+	indicatorCount := 0
+	for _, indicator := range routerosIndicators {
+		if strings.Contains(responseStr, indicator) {
+			indicatorCount++
+		}
+	}
+
+	// Must have at least 2 RouterOS-specific indicators to be confident
+	return indicatorCount >= 2
+}
+
+// isValidWinboxProtocolResponse checks if response is valid Winbox protocol
+func isValidWinboxProtocolResponse(response []byte) bool {
 	if len(response) < 6 {
 		return false
 	}
 
-	// Check for HTTP response (index file method)
-	if strings.HasPrefix(string(response), "HTTP/") {
-		return true
-	}
-
-	// Check for Winbox protocol response
-	// Look for potential Winbox magic bytes or structure
+	// Look for Winbox magic bytes at proper positions
 	for i := 0; i <= len(response)-6; i++ {
-		// Check for common Winbox magic patterns
-		magic := binary.LittleEndian.Uint16(response[i+4 : i+6])
-		if magic == 0x4D32 || magic == 0x324D { // "M2" or "2M"
-			return true
-		}
-	}
+		// Check for Winbox header structure
+		if i+6 <= len(response) {
+			magic := binary.LittleEndian.Uint16(response[i+4 : i+6])
 
-	// Check for RouterOS-specific strings
-	responseStr := strings.ToLower(string(response))
-	winboxIndicators := []string{
-		"routeros", "mikrotik", "winbox", "routerboard",
-		"version", "board", "architecture", "build",
-	}
+			// Check for known Winbox magic values
+			if magic == 0x4D32 || magic == 0x324D { // "M2" or "2M"
+				// Validate message length field
+				if i+4 <= len(response) {
+					msgLen := binary.LittleEndian.Uint16(response[i+2 : i+4])
 
-	for _, indicator := range winboxIndicators {
-		if strings.Contains(responseStr, indicator) {
-			return true
+					// Message length should be reasonable and consistent
+					if msgLen >= 6 && msgLen <= 65535 {
+						// Additional validation - check if this looks like proper Winbox structure
+						chunkOffset := response[i]
+						msgType := response[i+1]
+
+						// Chunk offset should be reasonable (0-255)
+						// Message type should be reasonable (1-255, not 0)
+						if msgType > 0 && msgType < 255 {
+							return true
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -109,22 +178,20 @@ func isValidWinboxResponse(response []byte) bool {
 }
 
 // parseWinboxResponse analyzes response and extracts RouterOS information
-func parseWinboxResponse(response []byte) (map[string]any, string) {
+func parseWinboxResponse(response []byte, isHTTP bool) (map[string]any, string) {
 	info := make(map[string]any)
 	responseStr := string(response)
 
 	info["Response_Length"] = fmt.Sprintf("%d", len(response))
 
-	// Parse HTTP response (index file method)
-	if strings.HasPrefix(responseStr, "HTTP/") {
-		info["Method"] = "Index_File_Request"
+	if isHTTP {
+		info["Method"] = "HTTP_Request"
 
-		// Extract RouterOS version from common patterns
+		// Extract RouterOS version with strict patterns
 		versionPatterns := []string{
-			`RouterOS\s+v?([\d\.]+)`,
-			`version[:\s]+([\d\.]+)`,
-			`build[:\s]+([\d\.]+)`,
-			`v([\d\.]+)`,
+			`RouterOS\s+v?([\d\.]+(?:\.\d+)?)`,
+			`routeros[:\s]+v?([\d\.]+(?:\.\d+)?)`,
+			`([\d]+\.[\d]+\.[\d]+)`, // Generic version pattern
 		}
 
 		var version string
@@ -136,12 +203,11 @@ func parseWinboxResponse(response []byte) (map[string]any, string) {
 			}
 		}
 
-		// Extract board/model information
+		// Extract board/model information with strict patterns
 		boardPatterns := []string{
-			`board[:\s]+([^\r\n]+)`,
-			`model[:\s]+([^\r\n]+)`,
-			`routerboard[:\s]+([^\r\n]+)`,
-			`architecture[:\s]+([^\r\n]+)`,
+			`board-name[:\s]*([^\r\n,;]+)`,
+			`routerboard[:\s]*([^\r\n,;]+)`,
+			`model[:\s]*([^\r\n,;]+)`,
 		}
 
 		var board string
@@ -149,8 +215,28 @@ func parseWinboxResponse(response []byte) (map[string]any, string) {
 			re := regexp.MustCompile(`(?i)` + pattern)
 			if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
 				board = strings.TrimSpace(matches[1])
-				break
+				// Clean up common artifacts
+				board = strings.Trim(board, `"'`)
+				if board != "" {
+					break
+				}
 			}
+		}
+
+		// Extract architecture
+		archRe := regexp.MustCompile(`(?i)architecture[:\s]*([^\r\n,;]+)`)
+		if matches := archRe.FindStringSubmatch(responseStr); len(matches) > 1 {
+			arch := strings.TrimSpace(matches[1])
+			arch = strings.Trim(arch, `"'`)
+			if arch != "" {
+				info["Architecture"] = arch
+			}
+		}
+
+		// Extract build information
+		buildRe := regexp.MustCompile(`(?i)build[:\s]+([\w\d\.]+)`)
+		if matches := buildRe.FindStringSubmatch(responseStr); len(matches) > 1 {
+			info["Build"] = matches[1]
 		}
 
 		if version != "" {
@@ -160,50 +246,42 @@ func parseWinboxResponse(response []byte) (map[string]any, string) {
 			info["Board_Model"] = board
 		}
 
-		// Look for other useful information
-		if strings.Contains(strings.ToLower(responseStr), "mikrotik") {
-			info["Vendor"] = "MikroTik"
-		}
-
-		// Extract any other version-like patterns
-		buildRe := regexp.MustCompile(`(?i)build[:\s]+([\w\d\.]+)`)
-		if matches := buildRe.FindStringSubmatch(responseStr); len(matches) > 1 {
-			info["Build"] = matches[1]
-		}
+		info["Vendor"] = "MikroTik"
 
 	} else {
 		// Parse Winbox protocol response
 		info["Method"] = "Winbox_Protocol"
 
-		// Look for Winbox magic bytes and structure
+		// Find and parse Winbox header
 		for i := 0; i <= len(response)-6; i++ {
 			magic := binary.LittleEndian.Uint16(response[i+4 : i+6])
 			if magic == 0x4D32 || magic == 0x324D {
 				info["Winbox_Magic"] = fmt.Sprintf("0x%04X", magic)
 
-				if i+2 < len(response) {
-					msgLen := binary.LittleEndian.Uint16(response[i+2 : i+4])
-					info["Message_Length"] = fmt.Sprintf("%d", msgLen)
+				chunkOffset := response[i]
+				msgType := response[i+1]
+				msgLen := binary.LittleEndian.Uint16(response[i+2 : i+4])
+
+				info["Chunk_Offset"] = fmt.Sprintf("%d", chunkOffset)
+				info["Message_Type"] = fmt.Sprintf("%d", msgType)
+				info["Message_Length"] = fmt.Sprintf("%d", msgLen)
+
+				// Try to extract any RouterOS-specific data from payload
+				if i+6 < len(response) {
+					payload := response[i+6:]
+					payloadStr := string(payload)
+
+					// Look for RouterOS version in payload
+					versionRe := regexp.MustCompile(`(?i)routeros[:\s]*v?([\d\.]+)`)
+					if matches := versionRe.FindStringSubmatch(payloadStr); len(matches) > 1 {
+						info["RouterOS_Version"] = matches[1]
+					}
 				}
 				break
 			}
 		}
 
-		// Extract any readable strings that might contain version info
-		stringRe := regexp.MustCompile(`[a-zA-Z0-9\.\-_]{4,}`)
-		matches := stringRe.FindAll(response, -1)
-
-		var extractedStrings []string
-		for _, match := range matches {
-			str := string(match)
-			if len(str) >= 4 {
-				extractedStrings = append(extractedStrings, str)
-			}
-		}
-
-		if len(extractedStrings) > 0 {
-			info["Extracted_Strings"] = strings.Join(extractedStrings, "; ")
-		}
+		info["Vendor"] = "MikroTik"
 	}
 
 	// Create product banner
@@ -245,37 +323,89 @@ func (p *WinboxPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 	// Verify we're running on the correct port
 	port := getPortFromConnection(conn)
 	if port != 8291 {
-		return nil, nil
+		return nil, nil // Only run on Winbox port 8291
 	}
 
-	// Try Method 1: Index file request (simpler, works on more versions)
+	log.Printf("WINBOX DEBUG: Starting Winbox detection for %s", conn.RemoteAddr().String())
+
+	// Try Method 1: Index file request
 	indexRequest := createIndexRequest()
+	log.Printf("WINBOX DEBUG: Trying index request (%d bytes): %s", len(indexRequest), hex.EncodeToString(indexRequest))
 
 	response, err := utils.SendRecv(conn, indexRequest, timeout)
-	if err == nil && len(response) > 0 && isValidWinboxResponse(response) {
-		infoMap, productBanner := parseWinboxResponse(response)
-		winboxInfo := fmt.Sprintf("%s", infoMap)
-		payload := plugins.ServiceWinbox{
-			Info:    winboxInfo,
-			Product: productBanner,
+	if err == nil && len(response) > 0 {
+		log.Printf("WINBOX DEBUG: Index response (%d bytes): %s", len(response), hex.EncodeToString(response))
+		log.Printf("WINBOX DEBUG: Index response ASCII: %q", string(response))
+
+		if isValidWinboxHTTPResponse(response) {
+			log.Printf("WINBOX DEBUG: Index response validated as Winbox")
+			infoMap, productBanner := parseWinboxResponse(response, true)
+			winboxInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceWinbox{
+				Info:    winboxInfo,
+				Product: productBanner,
+			}
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		} else {
+			log.Printf("WINBOX DEBUG: Index response failed validation")
 		}
-		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+	} else {
+		log.Printf("WINBOX DEBUG: Index request failed: %v", err)
 	}
 
-	// Try Method 2: Winbox protocol message (if index request failed)
+	// Try Method 2: List file request (like Shodan)
+	listRequest := createListRequest()
+	log.Printf("WINBOX DEBUG: Trying list request (%d bytes): %s", len(listRequest), hex.EncodeToString(listRequest))
+
+	response, err = utils.SendRecv(conn, listRequest, timeout)
+	if err == nil && len(response) > 0 {
+		log.Printf("WINBOX DEBUG: List response (%d bytes): %s", len(response), hex.EncodeToString(response))
+		log.Printf("WINBOX DEBUG: List response ASCII: %q", string(response))
+
+		// Check if this contains RouterOS version info (like Shodan data)
+		responseStr := strings.ToLower(string(response))
+		if strings.Contains(responseStr, ".jg:") || strings.Contains(responseStr, "routeros") || strings.Contains(responseStr, "mikrotik") {
+			log.Printf("WINBOX DEBUG: List response contains RouterOS indicators")
+			infoMap, productBanner := parseWinboxResponse(response, true)
+			winboxInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceWinbox{
+				Info:    winboxInfo,
+				Product: productBanner,
+			}
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		} else {
+			log.Printf("WINBOX DEBUG: List response failed validation")
+		}
+	} else {
+		log.Printf("WINBOX DEBUG: List request failed: %v", err)
+	}
+
+	// Try Method 3: Winbox protocol message
 	winboxRequest := createWinboxListRequest()
+	log.Printf("WINBOX DEBUG: Trying Winbox protocol request (%d bytes): %s", len(winboxRequest), hex.EncodeToString(winboxRequest))
 
 	response, err = utils.SendRecv(conn, winboxRequest, timeout)
-	if err == nil && len(response) > 0 && isValidWinboxResponse(response) {
-		infoMap, productBanner := parseWinboxResponse(response)
-		winboxInfo := fmt.Sprintf("%s", infoMap)
-		payload := plugins.ServiceWinbox{
-			Info:    winboxInfo,
-			Product: productBanner,
+	if err == nil && len(response) > 0 {
+		log.Printf("WINBOX DEBUG: Winbox protocol response (%d bytes): %s", len(response), hex.EncodeToString(response))
+		log.Printf("WINBOX DEBUG: Winbox protocol response ASCII: %q", string(response))
+
+		if isValidWinboxProtocolResponse(response) {
+			log.Printf("WINBOX DEBUG: Winbox protocol response validated")
+			infoMap, productBanner := parseWinboxResponse(response, false)
+			winboxInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceWinbox{
+				Info:    winboxInfo,
+				Product: productBanner,
+			}
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		} else {
+			log.Printf("WINBOX DEBUG: Winbox protocol response failed validation")
 		}
-		return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+	} else {
+		log.Printf("WINBOX DEBUG: Winbox protocol request failed: %v", err)
 	}
 
+	log.Printf("WINBOX DEBUG: No valid Winbox response detected")
 	return nil, nil
 }
 
