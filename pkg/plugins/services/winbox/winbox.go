@@ -245,7 +245,7 @@ func (p *WinboxPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 	// Verify we're running on the correct port
 	port := getPortFromConnection(conn)
 	if port != 8291 {
-		return nil, nil // Only run on Winbox port 8291
+		return nil, nil
 	}
 
 	// Try Method 1: Index file request (simpler, works on more versions)
