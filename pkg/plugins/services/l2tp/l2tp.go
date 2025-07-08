@@ -18,7 +18,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"regexp"
 	"strings"
@@ -42,7 +41,6 @@ func createNmapL2TPICRQPacket() []byte {
 	hexStr := "c802003c000000000000000080080000000000018008000000020100800e000000076e78702d7363616e800a00000003000000038008000000090000"
 	payload, err := hex.DecodeString(hexStr)
 	if err != nil {
-		log.Printf("L2TP DEBUG: Error decoding Nmap payload: %v", err)
 		return nil
 	}
 	return payload
@@ -61,7 +59,6 @@ func isL2TPResponse(response []byte) bool {
 
 		// Check for L2TP version 2 with control bit set
 		if version == 2 && (flags&0x8000) != 0 {
-			log.Printf("L2TP DEBUG: Found L2TP header at offset %d: 0x%04x", i, flags)
 			return true
 		}
 	}
@@ -75,12 +72,88 @@ func isL2TPResponse(response []byte) bool {
 
 	for _, indicator := range l2tpIndicators {
 		if strings.Contains(responseStr, indicator) {
-			log.Printf("L2TP DEBUG: Found L2TP indicator: %s", indicator)
 			return true
 		}
 	}
 
 	return false
+}
+
+// extractStringsFromResponse extracts printable strings from response
+func extractStringsFromResponse(response []byte) []string {
+	// Look for printable strings of 4+ characters
+	re := regexp.MustCompile(`[a-zA-Z0-9\-\.\_]{4,}`)
+	matches := re.FindAll(response, -1)
+
+	var strings []string
+	for _, match := range matches {
+		str := string(match)
+		if len(str) >= 4 {
+			strings = append(strings, str)
+		}
+	}
+
+	return strings
+}
+
+// identifyVendorFromStrings attempts to identify vendor from extracted strings
+func identifyVendorFromStrings(strings []string, hostName string) (string, string) {
+	combined := strings.ToLower(strings.Join(strings, " ") + " " + hostName)
+
+	// Vendor patterns with version extraction
+	vendorPatterns := map[string]struct {
+		name         string
+		versionRegex string
+	}{
+		"mikrotik":   {"MikroTik RouterOS", `routeros[\s\-]*([\d\.]+)`},
+		"routeros":   {"MikroTik RouterOS", `([\d\.]+)`},
+		"cisco":      {"Cisco", `ios[\s\-]*([\d\.]+)`},
+		"microsoft":  {"Microsoft", `windows[\s\-]*([\d\.]+)`},
+		"windows":    {"Microsoft Windows", `([\d\.]+)`},
+		"linux":      {"Linux L2TP", `([\d\.]+)`},
+		"strongswan": {"strongSwan", `([\d\.]+)`},
+		"openswan":   {"Openswan", `([\d\.]+)`},
+		"freeswan":   {"FreeS/WAN", `([\d\.]+)`},
+		"xl2tpd":     {"xl2tpd", `([\d\.]+)`},
+		"fortinet":   {"Fortinet FortiGate", `fortios[\s\-]*([\d\.]+)`},
+		"fortigate":  {"Fortinet FortiGate", `([\d\.]+)`},
+		"sonicwall":  {"SonicWall", `([\d\.]+)`},
+		"watchguard": {"WatchGuard", `([\d\.]+)`},
+		"zyxel":      {"ZyXEL", `([\d\.]+)`},
+		"draytek":    {"DrayTek", `([\d\.]+)`},
+		"huawei":     {"Huawei", `([\d\.]+)`},
+		"juniper":    {"Juniper Networks", `junos[\s\-]*([\d\.]+)`},
+		"ubiquiti":   {"Ubiquiti", `([\d\.]+)`},
+		"pfsense":    {"pfSense", `([\d\.]+)`},
+		"opnsense":   {"OPNsense", `([\d\.]+)`},
+		"vyos":       {"VyOS", `([\d\.]+)`},
+	}
+
+	for keyword, pattern := range vendorPatterns {
+		if strings.Contains(combined, keyword) {
+			vendor := pattern.name
+
+			// Try to extract version
+			if pattern.versionRegex != "" {
+				versionRe := regexp.MustCompile(pattern.versionRegex)
+				if matches := versionRe.FindStringSubmatch(combined); len(matches) > 1 {
+					return vendor, matches[1]
+				}
+			}
+
+			return vendor, ""
+		}
+	}
+
+	// Check for generic version patterns in hostname or strings
+	versionRe := regexp.MustCompile(`[\-\.]v?([\d]+\.[\d]+(?:\.[\d]+)?)`)
+	for _, str := range strings {
+		if matches := versionRe.FindStringSubmatch(strings.ToLower(str)); len(matches) > 1 {
+			return "Unknown", matches[1]
+		}
+	}
+
+	return "", ""
 }
 
 // parseL2TPResponse analyzes L2TP response and extracts information
@@ -94,6 +167,7 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 	messageTypes := make(map[string]int)
 	hostName := ""
 	vendorName := ""
+	protocolVersion := ""
 
 	for i := 0; i <= len(response)-12; i++ {
 		flags := binary.BigEndian.Uint16(response[i : i+2])
@@ -105,16 +179,13 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 			tunnelID := binary.BigEndian.Uint16(response[i+4 : i+6])
 			sessionID := binary.BigEndian.Uint16(response[i+6 : i+8])
 
-			log.Printf("L2TP DEBUG: Header %d - Length: %d, Tunnel: %d, Session: %d",
-				headerCount, length, tunnelID, sessionID)
-
 			if headerCount == 1 {
 				info["L2TP_Version"] = "2"
 				info["Tunnel_ID"] = fmt.Sprintf("%d", tunnelID)
 				info["Session_ID"] = fmt.Sprintf("%d", sessionID)
 			}
 
-			// Try to parse AVPs
+			// Try to parse AVPs with more robust parsing
 			if i+12 < len(response) && int(length) > 12 {
 				avpOffset := i + 12
 				endOffset := i + int(length)
@@ -149,6 +220,10 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 						default:
 							messageTypes[fmt.Sprintf("Type_%d", msgType)]++
 						}
+					} else if avpType == 2 && avpLength >= 8 { // Protocol Version
+						versionBytes := response[avpOffset+6 : avpOffset+8]
+						versionVal := binary.BigEndian.Uint16(versionBytes)
+						protocolVersion = fmt.Sprintf("%d.%d", versionVal>>8, versionVal&0xFF)
 					} else if avpType == 7 && avpLength > 6 { // Host Name
 						nameBytes := response[avpOffset+6 : avpOffset+int(avpLength)]
 						hostName = strings.TrimRight(string(nameBytes), "\x00")
@@ -171,29 +246,11 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 		info[fmt.Sprintf("Message_%s", msgType)] = fmt.Sprintf("%d", count)
 	}
 
-	// Extract any readable text that might indicate vendor/error
-	re := regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\-\. ]{3,}`)
-	matches := re.FindAll(response, -1)
+	// Extract strings from response
+	extractedStrings := extractStringsFromResponse(response)
 
-	var textStrings []string
-	for _, match := range matches {
-		str := strings.TrimSpace(string(match))
-		if len(str) > 3 {
-			textStrings = append(textStrings, str)
-			// Check for vendor indicators
-			lowerStr := strings.ToLower(str)
-			if strings.Contains(lowerStr, "mikrotik") {
-				vendorName = "MikroTik"
-			} else if strings.Contains(lowerStr, "cisco") {
-				vendorName = "Cisco"
-			} else if strings.Contains(lowerStr, "microsoft") {
-				vendorName = "Microsoft"
-			}
-		}
-	}
-
-	if len(textStrings) > 0 {
-		info["Text_Content"] = strings.Join(textStrings, "; ")
+	if len(extractedStrings) > 0 {
+		info["Extracted_Strings"] = strings.Join(extractedStrings, "; ")
 	}
 
 	if hostName != "" {
@@ -202,22 +259,45 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 	if vendorName != "" {
 		info["Vendor_Name"] = vendorName
 	}
+	if protocolVersion != "" {
+		info["Protocol_Version"] = protocolVersion
+	}
 
-	// Create banner
+	// Identify vendor and version from all available information
+	detectedVendor, detectedVersion := identifyVendorFromStrings(extractedStrings, hostName)
+
+	// Override with explicit vendor name if found
+	if vendorName != "" {
+		detectedVendor = vendorName
+	}
+
+	// Create enhanced banner
 	productBanner := "l2tp tunneling_protocol 2"
 
-	// Check for specific error messages or vendor info
+	// Check for specific error messages first
 	responseStr := strings.ToLower(string(response))
 	if strings.Contains(responseStr, "specify") && strings.Contains(responseStr, "tunnel") {
 		productBanner = "l2tp server (tunnel_id_required)"
-	} else if vendorName == "MikroTik" {
-		productBanner = "l2tp MikroTik RouterOS"
-	} else if vendorName == "Cisco" {
-		productBanner = "l2tp Cisco"
-	} else if vendorName == "Microsoft" {
-		productBanner = "l2tp Microsoft"
-	} else if vendorName != "" {
-		productBanner = fmt.Sprintf("l2tp %s", vendorName)
+	} else if detectedVendor != "" {
+		if detectedVersion != "" {
+			productBanner = fmt.Sprintf("l2tp %s %s", detectedVendor, detectedVersion)
+		} else {
+			productBanner = fmt.Sprintf("l2tp %s", detectedVendor)
+		}
+	} else if hostName != "" {
+		// Try to extract vendor info from hostname patterns
+		hostLower := strings.ToLower(hostName)
+		if strings.Contains(hostLower, "mikrotik") || strings.Contains(hostLower, "routeros") {
+			productBanner = "l2tp MikroTik RouterOS"
+		} else if strings.Contains(hostLower, "cisco") {
+			productBanner = "l2tp Cisco"
+		} else if strings.Contains(hostLower, "windows") || strings.Contains(hostLower, "win") {
+			productBanner = "l2tp Microsoft Windows"
+		} else if strings.Contains(hostLower, "linux") {
+			productBanner = "l2tp Linux"
+		} else {
+			productBanner = fmt.Sprintf("l2tp server (%s)", hostName)
+		}
 	} else if len(messageTypes) > 0 {
 		// Create banner based on message types seen
 		var msgList []string
@@ -243,37 +323,23 @@ func (p *L2TPPlugin) Type() plugins.Protocol {
 }
 
 func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	log.Printf("L2TP DEBUG: Starting L2TP detection using exact Nmap L2TP_ICRQ payload for %s", target.Host)
-
 	// Use the exact same payload that Nmap uses
 	nmapPayload := createNmapL2TPICRQPacket()
 	if nmapPayload == nil {
-		log.Printf("L2TP DEBUG: Failed to create Nmap payload")
 		return nil, nil
 	}
-
-	log.Printf("L2TP DEBUG: Sending Nmap L2TP_ICRQ payload (%d bytes): %x", len(nmapPayload), nmapPayload)
 
 	response, err := utils.SendRecv(conn, nmapPayload, timeout)
 	if err != nil {
-		log.Printf("L2TP DEBUG: Error sending Nmap payload: %v", err)
 		return nil, nil
 	}
 
-	log.Printf("L2TP DEBUG: Nmap payload response (%d bytes)", len(response))
-	if len(response) > 0 {
-		log.Printf("L2TP DEBUG: Response hex: %x", response)
-		log.Printf("L2TP DEBUG: Response ascii: %q", response)
-	}
-
 	if len(response) == 0 {
-		log.Printf("L2TP DEBUG: No response from Nmap L2TP_ICRQ payload")
 		return nil, nil
 	}
 
 	// Check if response looks like L2TP
 	if isL2TPResponse(response) {
-		log.Printf("L2TP DEBUG: L2TP response detected using Nmap payload")
 		infoMap, productBanner := parseL2TPResponse(response)
 		l2tpInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceL2TP{
@@ -283,7 +349,6 @@ func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 		return plugins.CreateServiceFrom(target, payload, false, "", plugins.UDP), nil
 	}
 
-	log.Printf("L2TP DEBUG: Response not recognized as L2TP")
 	return nil, nil
 }
 
