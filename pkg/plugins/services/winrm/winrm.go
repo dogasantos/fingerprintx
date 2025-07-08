@@ -15,6 +15,8 @@
 package winrm
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"regexp"
@@ -47,59 +49,158 @@ func getPortFromConnection(conn net.Conn) uint16 {
 	return 0
 }
 
-// createWinRMIdentifyRequest creates a WS-Management Identify request
-func createWinRMIdentifyRequest() string {
-	return `POST /wsman HTTP/1.1
+// createBasicWinRMRequest creates a basic HTTP request to test WinRM
+func createBasicWinRMRequest(host string) string {
+	return fmt.Sprintf(`GET /wsman HTTP/1.1
 Host: %s
-Content-Type: application/soap+xml;charset=UTF-8
-Content-Length: %d
 User-Agent: Microsoft WinRM Client
-Connection: Keep-Alive
+Connection: close
 
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
-  <soap:Header>
-    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.dmtf.org/wbem/wsman/1/wsman/Identify</wsa:Action>
-    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
-    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789012</wsa:MessageID>
-  </soap:Header>
-  <soap:Body>
-    <wsmid:Identify/>
-  </soap:Body>
-</soap:Envelope>`
+`, host)
 }
 
-// createWinRMEnumerateRequest creates a WS-Management Enumerate request for system info
-func createWinRMEnumerateRequest() string {
-	return `POST /wsman HTTP/1.1
+// createNTLMType1Request creates an NTLM Type 1 message request
+func createNTLMType1Request(host string) string {
+	// NTLM Type 1 message (simplified)
+	ntlmType1 := "TlRMTVNTUAABAAAAl4II4gAAAAAAAAAAAAAAAAAAAAAKADkAAAAA"
+
+	return fmt.Sprintf(`GET /wsman HTTP/1.1
 Host: %s
-Content-Type: application/soap+xml;charset=UTF-8
-Content-Length: %d
+Authorization: NTLM %s
 User-Agent: Microsoft WinRM Client
-Connection: Keep-Alive
+Connection: close
 
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
-  <soap:Header>
-    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</wsa:Action>
-    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
-    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789013</wsa:MessageID>
-    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_OperatingSystem</wsman:ResourceURI>
-  </soap:Header>
-  <soap:Body>
-    <wsen:Enumerate/>
-  </soap:Body>
-</soap:Envelope>`
+`, host, ntlmType1)
 }
 
-// createHTTPRequest formats a SOAP request as HTTP
-func createHTTPRequest(host string, soapBody string) []byte {
-	contentLength := len(soapBody)
-	request := fmt.Sprintf(soapBody, host, contentLength)
-	return []byte(request)
+// parseNTLMType2Response extracts information from NTLM Type 2 response
+func parseNTLMType2Response(response string) plugins.ServiceWinRM {
+	result := plugins.ServiceWinRM{
+		Product:    "winrm",
+		Anonymous:  false,
+		Vulnerable: false,
+	}
+
+	// Look for NTLM Type 2 message in WWW-Authenticate header
+	ntlmRegex := regexp.MustCompile(`WWW-Authenticate:\s*NTLM\s+([A-Za-z0-9+/=]+)`)
+	matches := ntlmRegex.FindStringSubmatch(response)
+	if len(matches) < 2 {
+		return result
+	}
+
+	// Decode base64 NTLM message
+	ntlmData, err := base64.StdEncoding.DecodeString(matches[1])
+	if err != nil || len(ntlmData) < 32 {
+		return result
+	}
+
+	// Parse NTLM Type 2 message structure
+	if len(ntlmData) >= 8 && string(ntlmData[0:8]) == "NTLMSSP\x00" {
+		messageType := binary.LittleEndian.Uint32(ntlmData[8:12])
+		if messageType == 2 { // Type 2 message
+			// Extract target name (domain/computer name)
+			if len(ntlmData) >= 20 {
+				targetNameLen := binary.LittleEndian.Uint16(ntlmData[12:14])
+				targetNameOffset := binary.LittleEndian.Uint32(ntlmData[16:20])
+
+				if targetNameOffset < uint32(len(ntlmData)) && targetNameLen > 0 {
+					endOffset := targetNameOffset + uint32(targetNameLen)
+					if endOffset <= uint32(len(ntlmData)) {
+						targetName := string(ntlmData[targetNameOffset:endOffset])
+						// Convert UTF-16 to UTF-8 (simplified)
+						if len(targetName) > 0 {
+							result.ComputerName = strings.ReplaceAll(targetName, "\x00", "")
+							result.Domain = result.ComputerName
+						}
+					}
+				}
+			}
+
+			// Extract target info (if present)
+			if len(ntlmData) >= 48 {
+				targetInfoLen := binary.LittleEndian.Uint16(ntlmData[40:42])
+				targetInfoOffset := binary.LittleEndian.Uint32(ntlmData[44:48])
+
+				if targetInfoOffset < uint32(len(ntlmData)) && targetInfoLen > 0 {
+					endOffset := targetInfoOffset + uint32(targetInfoLen)
+					if endOffset <= uint32(len(ntlmData)) {
+						targetInfo := ntlmData[targetInfoOffset:endOffset]
+						result = parseTargetInfo(targetInfo, result)
+					}
+				}
+			}
+		}
+	}
+
+	return result
 }
 
-// parseWinRMResponse extracts information from WinRM SOAP response
+// parseTargetInfo extracts detailed information from NTLM target info
+func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	offset := 0
+
+	for offset+4 <= len(targetInfo) {
+		avId := binary.LittleEndian.Uint16(targetInfo[offset : offset+2])
+		avLen := binary.LittleEndian.Uint16(targetInfo[offset+2 : offset+4])
+		offset += 4
+
+		if avLen == 0 || offset+int(avLen) > len(targetInfo) {
+			break
+		}
+
+		value := targetInfo[offset : offset+int(avLen)]
+
+		switch avId {
+		case 1: // NetBIOS computer name
+			result.ComputerName = utf16ToString(value)
+		case 2: // NetBIOS domain name
+			result.Domain = utf16ToString(value)
+		case 3: // DNS computer name
+			if result.ComputerName == "" {
+				result.ComputerName = utf16ToString(value)
+			}
+		case 4: // DNS domain name
+			if result.Domain == "" {
+				result.Domain = utf16ToString(value)
+			}
+		case 5: // DNS tree name
+			// Additional domain info
+		case 7: // Timestamp
+			// Could extract timestamp if needed
+		case 9: // Target name
+			// Additional target info
+		}
+
+		offset += int(avLen)
+
+		if avId == 0 { // End of list
+			break
+		}
+	}
+
+	return result
+}
+
+// utf16ToString converts UTF-16 bytes to string
+func utf16ToString(data []byte) string {
+	if len(data)%2 != 0 {
+		return ""
+	}
+
+	var result []rune
+	for i := 0; i < len(data); i += 2 {
+		if i+1 < len(data) {
+			char := binary.LittleEndian.Uint16(data[i : i+2])
+			if char != 0 {
+				result = append(result, rune(char))
+			}
+		}
+	}
+
+	return string(result)
+}
+
+// parseWinRMResponse analyzes WinRM response and extracts information
 func parseWinRMResponse(response string) plugins.ServiceWinRM {
 	result := plugins.ServiceWinRM{
 		Product:    "winrm",
@@ -107,190 +208,87 @@ func parseWinRMResponse(response string) plugins.ServiceWinRM {
 		Vulnerable: false,
 	}
 
-	// Extract protocol version from response
-	if strings.Contains(response, "HTTP/1.1 200") || strings.Contains(response, "HTTP/1.0 200") {
-		result.Protocol = "HTTP"
-	}
-
-	// Extract WS-Management version
-	wsmanVersionRegex := regexp.MustCompile(`ProductVersion[">]*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)`)
-	if matches := wsmanVersionRegex.FindStringSubmatch(response); len(matches) > 1 {
-		result.WSManVersion = matches[1]
-		result.Version = matches[1]
-	}
-
-	// Extract product vendor (Microsoft)
-	if strings.Contains(response, "Microsoft Corporation") {
-		result.Product = "microsoft winrm"
-	}
-
-	// Extract OS version information
-	osVersionRegex := regexp.MustCompile(`ProductVendor[">]*Microsoft Corporation[^<]*<[^>]*>([^<]+)`)
-	if matches := osVersionRegex.FindStringSubmatch(response); len(matches) > 1 {
-		result.OSVersion = strings.TrimSpace(matches[1])
-	}
-
-	// Look for Windows version in various places
-	windowsVersionRegex := regexp.MustCompile(`Windows[^<]*([0-9]+\.[0-9]+)`)
-	if matches := windowsVersionRegex.FindStringSubmatch(response); len(matches) > 1 {
-		if result.OSVersion == "" {
-			result.OSVersion = "Windows " + matches[1]
+	// Check for Microsoft-HTTPAPI server header (strong WinRM indicator)
+	if strings.Contains(response, "Microsoft-HTTPAPI") {
+		serverRegex := regexp.MustCompile(`Server:\s*Microsoft-HTTPAPI/([0-9.]+)`)
+		if matches := serverRegex.FindStringSubmatch(response); len(matches) > 1 {
+			result.Version = matches[1]
+			result.Product = fmt.Sprintf("winrm (Microsoft-HTTPAPI/%s)", matches[1])
 		}
 	}
 
-	// Extract computer name
-	computerNameRegex := regexp.MustCompile(`<wsmid:ComputerName[^>]*>([^<]+)</wsmid:ComputerName>`)
-	if matches := computerNameRegex.FindStringSubmatch(response); len(matches) > 1 {
-		result.ComputerName = matches[1]
+	// Extract protocol information
+	if strings.Contains(response, "HTTP/1.1") {
+		result.Protocol = "HTTP"
+	} else if strings.Contains(response, "HTTP/1.0") {
+		result.Protocol = "HTTP"
 	}
 
-	// Extract domain information
-	domainRegex := regexp.MustCompile(`<wsmid:Domain[^>]*>([^<]+)</wsmid:Domain>`)
-	if matches := domainRegex.FindStringSubmatch(response); len(matches) > 1 {
-		result.Domain = matches[1]
-	}
-
-	// Check for SOAP version
-	if strings.Contains(response, "soap-envelope") {
-		result.SOAPVersion = "1.2"
-	} else if strings.Contains(response, "soap:Envelope") {
-		result.SOAPVersion = "1.1"
-	}
-
-	// Extract authentication methods from headers
+	// Check for authentication methods
 	authMethods := []string{}
 	if strings.Contains(response, "WWW-Authenticate:") {
-		authHeaderRegex := regexp.MustCompile(`WWW-Authenticate:\s*([^\r\n]+)`)
-		if matches := authHeaderRegex.FindAllStringSubmatch(response, -1); len(matches) > 0 {
-			for _, match := range matches {
-				if len(match) > 1 {
-					authMethod := strings.TrimSpace(match[1])
-					if strings.Contains(authMethod, "Negotiate") {
-						authMethods = append(authMethods, "Negotiate")
-					}
-					if strings.Contains(authMethod, "NTLM") {
-						authMethods = append(authMethods, "NTLM")
-					}
-					if strings.Contains(authMethod, "Basic") {
-						authMethods = append(authMethods, "Basic")
-					}
-					if strings.Contains(authMethod, "Digest") {
-						authMethods = append(authMethods, "Digest")
-					}
-					if strings.Contains(authMethod, "Kerberos") {
-						authMethods = append(authMethods, "Kerberos")
-					}
-				}
-			}
+		if strings.Contains(response, "NTLM") {
+			authMethods = append(authMethods, "NTLM")
+		}
+		if strings.Contains(response, "Negotiate") {
+			authMethods = append(authMethods, "Negotiate")
+		}
+		if strings.Contains(response, "Basic") {
+			authMethods = append(authMethods, "Basic")
+		}
+		if strings.Contains(response, "Digest") {
+			authMethods = append(authMethods, "Digest")
 		}
 	}
 	result.AuthMethods = authMethods
 
-	// Check if anonymous access is allowed (no auth required)
-	if strings.Contains(response, "<wsmid:Identify") && !strings.Contains(response, "401") && !strings.Contains(response, "Unauthorized") {
+	// Check response codes
+	if strings.Contains(response, "401 Unauthorized") {
+		// Normal for WinRM - requires authentication
+	} else if strings.Contains(response, "404 Not Found") {
+		// Also normal for WinRM when accessing wrong endpoint
+	} else if strings.Contains(response, "200 OK") {
+		// Might indicate anonymous access
 		result.Anonymous = true
-		result.Vulnerable = true // Anonymous access is a security concern
+		result.Vulnerable = true
 	}
 
-	// Extract max envelope size
-	maxEnvelopeRegex := regexp.MustCompile(`MaxEnvelopeSize[">]*([0-9]+)`)
-	if matches := maxEnvelopeRegex.FindStringSubmatch(response); len(matches) > 1 {
-		if size, err := strconv.Atoi(matches[1]); err == nil {
-			result.MaxEnvelope = size
+	// Check for weak authentication over HTTP
+	if result.Protocol == "HTTP" && len(authMethods) > 0 {
+		for _, method := range authMethods {
+			if method == "Basic" {
+				result.Vulnerable = true
+				break
+			}
 		}
-	}
-
-	// Extract timeout information
-	timeoutRegex := regexp.MustCompile(`Timeout[">]*PT([0-9]+)S`)
-	if matches := timeoutRegex.FindStringSubmatch(response); len(matches) > 1 {
-		if timeout, err := strconv.Atoi(matches[1]); err == nil {
-			result.MaxTimeout = timeout
-		}
-	}
-
-	// Check for PowerShell remoting indicators
-	if strings.Contains(response, "PowerShell") || strings.Contains(response, "Microsoft.PowerShell") {
-		result.PowerShell = true
-	}
-
-	// Check for remote shell capabilities
-	if strings.Contains(response, "cmd") || strings.Contains(response, "shell") {
-		result.RemoteShell = true
-	}
-
-	// Determine server type
-	if strings.Contains(response, "Windows Server") {
-		result.ServerType = "Windows Server"
-	} else if strings.Contains(response, "Windows") {
-		result.ServerType = "Windows Workstation"
-	}
-
-	// Build comprehensive product banner
-	result.Product = "winrm"
-	if result.WSManVersion != "" {
-		result.Product = fmt.Sprintf("winrm %s", result.WSManVersion)
-	}
-	if result.OSVersion != "" {
-		result.Product += fmt.Sprintf(" (%s)", result.OSVersion)
-	}
-	if result.Anonymous {
-		result.Product += " [ANONYMOUS]"
-	}
-	if result.Vulnerable {
-		result.Product += " [VULNERABLE]"
 	}
 
 	return result
 }
 
-// testWinRMEndpoints tests various WinRM endpoints
-func testWinRMEndpoints(conn net.Conn, host string, timeout time.Duration) ([]string, string) {
-	endpoints := []string{"/wsman", "/wsman/", "/WSMan", "/WSMan/"}
-	var bestResponse string
-	var foundEndpoints []string
+// isWinRMResponse checks if response indicates WinRM service
+func isWinRMResponse(response string) bool {
+	// Strong indicators of WinRM
+	indicators := []string{
+		"Microsoft-HTTPAPI",
+		"WinRM",
+		"WSMan",
+		"wsman",
+	}
 
-	for _, endpoint := range endpoints {
-		// Create identify request for this endpoint
-		soapBody := strings.Replace(createWinRMIdentifyRequest(), "/wsman", endpoint, 1)
-		request := createHTTPRequest(host, soapBody)
-
-		response, err := utils.SendRecv(conn, request, timeout)
-		if err == nil && len(response) > 0 {
-			responseStr := string(response)
-			if strings.Contains(responseStr, "200 OK") || strings.Contains(responseStr, "wsmid:Identify") {
-				foundEndpoints = append(foundEndpoints, endpoint)
-				if len(responseStr) > len(bestResponse) {
-					bestResponse = responseStr
-				}
-			}
+	for _, indicator := range indicators {
+		if strings.Contains(response, indicator) {
+			return true
 		}
 	}
 
-	return foundEndpoints, bestResponse
-}
-
-// checkWinRMVulnerabilities performs additional vulnerability checks
-func checkWinRMVulnerabilities(conn net.Conn, host string, timeout time.Duration, result *plugins.ServiceWinRM) {
-	// Test for anonymous enumeration
-	enumerateRequest := createHTTPRequest(host, createWinRMEnumerateRequest())
-	response, err := utils.SendRecv(conn, enumerateRequest, timeout)
-	if err == nil && len(response) > 0 {
-		responseStr := string(response)
-		if strings.Contains(responseStr, "200 OK") && strings.Contains(responseStr, "Win32_OperatingSystem") {
-			result.Vulnerable = true
-			result.Anonymous = true
-		}
+	// Check for typical WinRM response patterns
+	if (strings.Contains(response, "401 Unauthorized") || strings.Contains(response, "404 Not Found")) &&
+		strings.Contains(response, "NTLM") {
+		return true
 	}
 
-	// Check for weak authentication
-	if len(result.AuthMethods) > 0 {
-		for _, method := range result.AuthMethods {
-			if method == "Basic" {
-				result.Vulnerable = true // Basic auth over HTTP is vulnerable
-				break
-			}
-		}
-	}
+	return false
 }
 
 func (p *WinRMPlugin) PortPriority(port uint16) bool {
@@ -316,15 +314,40 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		host = fmt.Sprintf("%s:%d", target.Host, port)
 	}
 
-	// Test WinRM endpoints
-	endpoints, response := testWinRMEndpoints(conn, host, timeout)
-	if len(endpoints) == 0 || response == "" {
+	// First, try a basic request to /wsman
+	basicRequest := createBasicWinRMRequest(host)
+	response, err := utils.SendRecv(conn, []byte(basicRequest), timeout)
+	if err != nil {
 		return nil, nil
 	}
 
-	// Parse the response
-	result := parseWinRMResponse(response)
-	result.Endpoints = endpoints
+	responseStr := string(response)
+
+	// Check if this looks like WinRM
+	if !isWinRMResponse(responseStr) {
+		return nil, nil
+	}
+
+	// Parse basic response
+	result := parseWinRMResponse(responseStr)
+
+	// If we see NTLM authentication, try to get more info
+	if strings.Contains(responseStr, "NTLM") {
+		ntlmRequest := createNTLMType1Request(host)
+		ntlmResponse, err := utils.SendRecv(conn, []byte(ntlmRequest), timeout)
+		if err == nil {
+			ntlmResponseStr := string(ntlmResponse)
+			ntlmInfo := parseNTLMType2Response(ntlmResponseStr)
+
+			// Merge NTLM information
+			if ntlmInfo.ComputerName != "" {
+				result.ComputerName = ntlmInfo.ComputerName
+			}
+			if ntlmInfo.Domain != "" {
+				result.Domain = ntlmInfo.Domain
+			}
+		}
+	}
 
 	// Set protocol based on port
 	if port == 5986 {
@@ -335,12 +358,28 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		result.Encryption = "None"
 	}
 
-	// Perform additional vulnerability checks
-	checkWinRMVulnerabilities(conn, host, timeout, &result)
+	// Determine OS version from computer name patterns
+	if result.ComputerName != "" {
+		if strings.Contains(strings.ToUpper(result.ComputerName), "WIN-") {
+			result.OSVersion = "Windows Server"
+			result.ServerType = "Windows Server"
+		}
+	}
+
+	// Build comprehensive product banner
+	if result.ComputerName != "" {
+		result.Product += fmt.Sprintf(" (%s)", result.ComputerName)
+	}
+	if result.Anonymous {
+		result.Product += " [ANONYMOUS]"
+	}
+	if result.Vulnerable {
+		result.Product += " [VULNERABLE]"
+	}
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
 }
 
 func (p *WinRMPlugin) Priority() int {
-	return 850
+	return 900 // Higher priority than HTTP to catch WinRM before generic HTTP
 }
