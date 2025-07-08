@@ -81,6 +81,7 @@ const (
 	ProtoL2TP        = "l2tp"
 	ProtoPPTP        = "pptp"
 	ProtoWINBOX      = "winbox"
+	ProtoMONGO       = "mongodb"
 )
 
 // Used as a key for maps to plugins.
@@ -272,7 +273,10 @@ func (e Service) Metadata() Metadata {
 		var p ServiceWinbox
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
-
+	case ProtoMONGO:
+		var p ServiceMongoDB
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
 	//default
 	default:
 		var p ServiceUnknown
@@ -853,6 +857,13 @@ type ServicePPTP struct {
 func (e ServiceWinbox) Type() string { return ProtoWINBOX }
 
 type ServiceWinbox struct {
+	Info    string `json:"info"`
+	Product string `json:"product"`
+}
+
+func (e ServiceMongoDB) Type() string { return ProtoMONGO }
+
+type ServiceMongoDB struct {
 	Info    string `json:"info"`
 	Product string `json:"product"`
 }
