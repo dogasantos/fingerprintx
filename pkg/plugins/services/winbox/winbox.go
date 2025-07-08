@@ -16,9 +16,7 @@ package winbox
 
 import (
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -93,21 +91,6 @@ func createMalformedWinboxPackets() [][]byte {
 	}
 	packets = append(packets, packet5)
 
-	// 6. Partial Winbox header
-	packet6 := make([]byte, 3)
-	packet6[0] = 0x00
-	packet6[1] = 0x01
-	packet6[2] = 0x32 // Incomplete
-	packets = append(packets, packet6)
-
-	// 7. Wrong endianness
-	packet7 := make([]byte, 16)
-	packet7[0] = 0x00
-	packet7[1] = 0x01
-	binary.BigEndian.PutUint16(packet7[2:4], 16) // Big endian instead of little
-	binary.BigEndian.PutUint16(packet7[4:6], 0x4D32)
-	packets = append(packets, packet7)
-
 	return packets
 }
 
@@ -127,15 +110,6 @@ func createMalformedHTTPRequests() [][]byte {
 	req3 := "GET /index WINBOX/1.0\r\nHost: router\r\n\r\n"
 	requests = append(requests, []byte(req3))
 
-	// 4. Binary data in HTTP
-	req4 := "GET /index HTTP/1.1\r\nHost: router\r\n\r\n\x00\x01\x4D\x32"
-	requests = append(requests, []byte(req4))
-
-	// 5. Very long request
-	longPath := strings.Repeat("A", 1000)
-	req5 := fmt.Sprintf("GET /%s HTTP/1.1\r\nHost: router\r\n\r\n", longPath)
-	requests = append(requests, []byte(req5))
-
 	return requests
 }
 
@@ -150,9 +124,6 @@ func isWinboxErrorResponse(response []byte) bool {
 	// Look for Winbox/RouterOS specific error indicators
 	winboxIndicators := []string{
 		"winbox", "routeros", "mikrotik", "routerboard",
-		"invalid", "error", "bad", "wrong", "failed",
-		"protocol", "version", "magic", "header",
-		"session", "authentication", "login",
 	}
 
 	indicatorCount := 0
@@ -162,8 +133,8 @@ func isWinboxErrorResponse(response []byte) bool {
 		}
 	}
 
-	// If we have multiple indicators, it's likely a Winbox error
-	if indicatorCount >= 2 {
+	// Must have at least one strong Winbox indicator
+	if indicatorCount >= 1 {
 		return true
 	}
 
@@ -172,7 +143,7 @@ func isWinboxErrorResponse(response []byte) bool {
 		// Look for potential Winbox magic bytes in error responses
 		for i := 0; i <= len(response)-6; i++ {
 			magic := binary.LittleEndian.Uint16(response[i : i+2])
-			if magic == 0x4D32 || magic == 0x324D || magic == 0xDEAD || magic == 0xBEEF {
+			if magic == 0x4D32 || magic == 0x324D {
 				return true
 			}
 		}
@@ -231,26 +202,11 @@ func parseErrorResponse(response []byte, method string) (map[string]any, string)
 		}
 	}
 
-	// Extract any readable strings
-	stringRe := regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\.\-_\s]{3,20}`)
-	matches := stringRe.FindAll(response, 10) // Limit to first 10 matches
-
-	var extractedStrings []string
-	for _, match := range matches {
-		str := strings.TrimSpace(string(match))
-		if len(str) >= 4 && len(str) <= 20 {
-			extractedStrings = append(extractedStrings, str)
-		}
-	}
-
 	if version != "" {
 		info["RouterOS_Version"] = version
 	}
 	if errorMsg != "" {
 		info["Error_Message"] = errorMsg
-	}
-	if len(extractedStrings) > 0 {
-		info["Extracted_Strings"] = strings.Join(extractedStrings, "; ")
 	}
 
 	// Check for specific Winbox/RouterOS indicators
@@ -270,7 +226,6 @@ func parseErrorResponse(response []byte, method string) (map[string]any, string)
 	if version != "" {
 		productBanner = fmt.Sprintf("winbox MikroTik RouterOS %s", version)
 	}
-	productBanner += " (error-based detection)"
 
 	return info, productBanner
 }
@@ -293,59 +248,36 @@ func (p *WinboxPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.
 		return nil, nil
 	}
 
-	log.Printf("WINBOX DEBUG: Starting error-based Winbox detection for %s", conn.RemoteAddr().String())
-
-	// Try malformed Winbox packets
+	// Try malformed Winbox packets to trigger error responses
 	malformedPackets := createMalformedWinboxPackets()
 	for i, packet := range malformedPackets {
-		log.Printf("WINBOX DEBUG: Trying malformed Winbox packet %d (%d bytes): %s", i+1, len(packet), hex.EncodeToString(packet))
-
 		response, err := utils.SendRecv(conn, packet, timeout)
-		if err == nil && len(response) > 0 {
-			log.Printf("WINBOX DEBUG: Malformed packet %d response (%d bytes): %s", i+1, len(response), hex.EncodeToString(response))
-			log.Printf("WINBOX DEBUG: Malformed packet %d response ASCII: %q", i+1, string(response))
-
-			if isWinboxErrorResponse(response) {
-				log.Printf("WINBOX DEBUG: Detected Winbox error response from malformed packet %d", i+1)
-				infoMap, productBanner := parseErrorResponse(response, fmt.Sprintf("Malformed_Winbox_Packet_%d", i+1))
-				winboxInfo := fmt.Sprintf("%s", infoMap)
-				payload := plugins.ServiceWinbox{
-					Info:    winboxInfo,
-					Product: productBanner,
-				}
-				return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		if err == nil && len(response) > 0 && isWinboxErrorResponse(response) {
+			infoMap, productBanner := parseErrorResponse(response, fmt.Sprintf("Malformed_Winbox_Packet_%d", i+1))
+			winboxInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceWinbox{
+				Info:    winboxInfo,
+				Product: productBanner,
 			}
-		} else if err != nil {
-			log.Printf("WINBOX DEBUG: Malformed packet %d failed: %v", i+1, err)
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 		}
 	}
 
 	// Try malformed HTTP requests
 	malformedHTTP := createMalformedHTTPRequests()
 	for i, request := range malformedHTTP {
-		log.Printf("WINBOX DEBUG: Trying malformed HTTP request %d (%d bytes): %s", i+1, len(request), hex.EncodeToString(request))
-
 		response, err := utils.SendRecv(conn, request, timeout)
-		if err == nil && len(response) > 0 {
-			log.Printf("WINBOX DEBUG: Malformed HTTP %d response (%d bytes): %s", i+1, len(response), hex.EncodeToString(response))
-			log.Printf("WINBOX DEBUG: Malformed HTTP %d response ASCII: %q", i+1, string(response))
-
-			if isWinboxErrorResponse(response) {
-				log.Printf("WINBOX DEBUG: Detected Winbox error response from malformed HTTP %d", i+1)
-				infoMap, productBanner := parseErrorResponse(response, fmt.Sprintf("Malformed_HTTP_%d", i+1))
-				winboxInfo := fmt.Sprintf("%s", infoMap)
-				payload := plugins.ServiceWinbox{
-					Info:    winboxInfo,
-					Product: productBanner,
-				}
-				return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+		if err == nil && len(response) > 0 && isWinboxErrorResponse(response) {
+			infoMap, productBanner := parseErrorResponse(response, fmt.Sprintf("Malformed_HTTP_%d", i+1))
+			winboxInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceWinbox{
+				Info:    winboxInfo,
+				Product: productBanner,
 			}
-		} else if err != nil {
-			log.Printf("WINBOX DEBUG: Malformed HTTP %d failed: %v", i+1, err)
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 		}
 	}
 
-	log.Printf("WINBOX DEBUG: No Winbox error responses detected")
 	return nil, nil
 }
 
