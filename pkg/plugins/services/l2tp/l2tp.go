@@ -1,17 +1,3 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package l2tp
 
 import (
@@ -20,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +22,19 @@ func init() {
 	plugins.RegisterPlugin(&L2TPPlugin{})
 }
 
+// getPortFromConnection extracts port number from connection
+func getPortFromConnection(conn net.Conn) uint16 {
+	addr := conn.RemoteAddr().String()
+	parts := strings.Split(addr, ":")
+	if len(parts) >= 2 {
+		portStr := parts[len(parts)-1]
+		if port, err := strconv.Atoi(portStr); err == nil {
+			return uint16(port)
+		}
+	}
+	return 0
+}
+
 // createNmapL2TPICRQPacket creates the exact L2TP_ICRQ packet that Nmap uses
 func createNmapL2TPICRQPacket() []byte {
 	// This is the exact payload from nmap-payloads for L2TP_ICRQ
@@ -46,25 +46,59 @@ func createNmapL2TPICRQPacket() []byte {
 	return payload
 }
 
-// isL2TPResponse checks if response looks like L2TP
-func isL2TPResponse(response []byte) bool {
+// isValidL2TPResponse checks if response looks like L2TP (not IKE)
+func isValidL2TPResponse(response []byte) bool {
 	if len(response) < 8 {
 		return false
 	}
 
-	// Look for L2TP header pattern anywhere in response
+	// First, check if this looks like IKE (which should NOT be detected as L2TP)
+	if len(response) >= 28 {
+		// Check for IKE header pattern (version field at byte 17)
+		version := response[17]
+		if version == 0x10 || version == 0x20 { // IKEv1 or IKEv2
+			// This is likely IKE, not L2TP
+			return false
+		}
+	}
+
+	// Look for L2TP header pattern
 	for i := 0; i <= len(response)-8; i++ {
 		flags := binary.BigEndian.Uint16(response[i : i+2])
 		version := flags & 0x000F
 
 		// Check for L2TP version 2 with control bit set
 		if version == 2 && (flags&0x8000) != 0 {
+			// Additional validation: check if this could be IKE
+			if i == 0 && len(response) >= 28 {
+				// If this starts at offset 0 and is 28+ bytes, check for IKE patterns
+				// IKE has SPIs at the beginning (16 bytes), then next payload, version, etc.
+				// L2TP has different structure
+
+				// Check if bytes 16-17 look like IKE (next payload + version)
+				if response[17] == 0x10 || response[17] == 0x20 {
+					return false // This is IKE
+				}
+			}
 			return true
 		}
 	}
 
-	// Look for L2TP error messages or strings
+	// Look for L2TP-specific error messages or strings (but not IKE strings)
 	responseStr := strings.ToLower(string(response))
+
+	// IKE-specific indicators that should NOT be detected as L2TP
+	ikeIndicators := []string{
+		"ike", "ipsec", "esp", "ah", "isakmp", "oakley",
+	}
+
+	for _, indicator := range ikeIndicators {
+		if strings.Contains(responseStr, indicator) {
+			return false // This is IKE, not L2TP
+		}
+	}
+
+	// L2TP-specific indicators
 	l2tpIndicators := []string{
 		"tunnel", "assigned", "specify", "l2tp", "ppp", "lac", "lns",
 		"connection", "session", "call", "bearer", "framing",
@@ -311,6 +345,7 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 }
 
 func (p *L2TPPlugin) PortPriority(port uint16) bool {
+	// L2TP should ONLY run on port 1701, not on 4500 (which is IKE NAT-T)
 	return port == 1701
 }
 
@@ -323,6 +358,12 @@ func (p *L2TPPlugin) Type() plugins.Protocol {
 }
 
 func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	// Double-check port restriction to prevent running on IKE ports
+	port := getPortFromConnection(conn)
+	if port != 1701 {
+		return nil, nil // Only run on L2TP port 1701
+	}
+
 	// Use the exact same payload that Nmap uses
 	nmapPayload := createNmapL2TPICRQPacket()
 	if nmapPayload == nil {
@@ -338,8 +379,8 @@ func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 		return nil, nil
 	}
 
-	// Check if response looks like L2TP
-	if isL2TPResponse(response) {
+	// Check if response looks like L2TP (and NOT IKE)
+	if isValidL2TPResponse(response) {
 		infoMap, productBanner := parseL2TPResponse(response)
 		l2tpInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceL2TP{
