@@ -69,6 +69,7 @@ import (
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pptp"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/sip"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/winbox"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/winrm"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/zabbix"
 
 	// nao consegui testar pq nao achei nenhum aberto na internet pra testar
