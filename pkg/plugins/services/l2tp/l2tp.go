@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -20,49 +22,27 @@ func init() {
 }
 
 /*
-Layer 2 Tunneling Protocol (L2TP) Detection
+Layer 2 Tunneling Protocol (L2TP) Detection with Vendor Extraction
 
-L2TP is a tunneling protocol used to support VPNs. It operates over UDP port 1701
-and uses control messages to establish tunnels between endpoints.
+This plugin performs unauthenticated L2TP protocol fingerprinting and extracts
+vendor/device information from L2TP responses.
 
-L2TP Header Format (RFC 2661):
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|T|L|x|x|S|x|O|P|x|x|x|x|  Ver  |          Length (opt)         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|           Tunnel ID           |           Session ID          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|             Ns (opt)          |             Nr (opt)          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|      Offset Size (opt)        |    Offset pad... (opt)
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+L2TP operates over UDP port 1701 and uses AVPs (Attribute Value Pairs) to
+carry vendor and device information in control messages.
 
-Control Message Types:
-- SCCRQ (Start-Control-Connection-Request) = 1
-- SCCRP (Start-Control-Connection-Reply) = 2
-- SCCCN (Start-Control-Connection-Connected) = 3
-- StopCCN (Stop-Control-Connection-Notification) = 4
-Layer 2 Tunneling Protocol (L2TP) Detection - Conservative Approach
+The plugin extracts vendor information from:
+- Host Name AVP (Type 7): Device hostname
+- Vendor Name AVP (Type 8): Vendor/manufacturer string
+- Other vendor-specific AVPs
 
-This plugin performs unauthenticated L2TP protocol fingerprinting by sending
-a Start-Control-Connection-Request (SCCRQ) and only returns positive detection
-when receiving a definitive L2TP response.
-
-L2TP operates over UDP port 1701 and uses specific control message formats.
-The plugin only reports L2TP when it receives:
-- SCCRP (Start-Control-Connection-Reply) - indicates L2TP server accepted connection
-- StopCCN (Stop-Control-Connection-Notification) - indicates L2TP server rejected connection
-- Other valid L2TP control messages with proper header structure
-
-This conservative approach ensures 100% accuracy in L2TP detection.
+Common vendors detected: MikroTik, Cisco, Microsoft, etc.
 */
 
-// createL2TPSCCRQPacket creates a minimal Start-Control-Connection-Request packet
+// createL2TPSCCRQPacket creates a Start-Control-Connection-Request packet
 func createL2TPSCCRQPacket() []byte {
 	var packet bytes.Buffer
 
-	// L2TP Header for control message
+	// L2TP Header
 	// Flags: T=1 (control), L=1 (length present), S=1 (sequence present), Ver=2
 	flags := uint16(0xC802) // 1100 1000 0000 0010
 	binary.Write(&packet, binary.BigEndian, flags)
@@ -174,64 +154,125 @@ func isDefinitiveL2TPResponse(response []byte) bool {
 		return false
 	}
 
-	// 7. Reserved bits (x) should be 0
-	reservedBits := (flags & 0x3070)
-	if reservedBits != 0 {
-		return false
-	}
-
-	// 8. Length field should match actual packet length
+	// 7. Length field should match actual packet length
 	if int(length) != len(response) {
 		return false
 	}
 
-	// 9. Must have AVPs starting at offset 12
+	// 8. Must have AVPs starting at offset 12
 	if len(response) <= 12 {
 		return false
 	}
 
-	// 10. Validate first AVP is Message Type (Type 0)
-	avpData := response[12:]
+	// 9. Try to parse first AVP to validate structure
+	return parseFirstAVP(response[12:])
+}
+
+// parseFirstAVP validates the first AVP structure
+func parseFirstAVP(avpData []byte) bool {
 	if len(avpData) < 6 {
 		return false
 	}
 
 	avpFlags := binary.BigEndian.Uint16(avpData[0:2])
-	avpType := avpFlags & 0x3FFF // Remove M and H bits
+	vendorID := binary.BigEndian.Uint16(avpData[2:4])
 	avpLength := binary.BigEndian.Uint16(avpData[4:6])
 
-	// First AVP must be Message Type (Type 0)
-	if avpType != 0 {
+	// Basic validation
+	if avpLength < 6 || int(avpLength) > len(avpData) {
 		return false
 	}
 
-	// Message Type AVP must have proper length
-	if avpLength < 8 {
+	// For IETF AVPs, vendor ID should be 0
+	if vendorID != 0 {
 		return false
 	}
 
-	// Extract message type value
-	if len(avpData) < 8 {
-		return false
+	// Extract AVP type
+	avpType := avpFlags & 0x3FFF
+
+	// First AVP should typically be Message Type (0) for control messages
+	// But we'll accept other reasonable AVP types too
+	validFirstAVPs := []uint16{0, 2, 7, 8, 9} // Message Type, Protocol Version, Host Name, Vendor Name, Assigned Tunnel ID
+	for _, validType := range validFirstAVPs {
+		if avpType == validType {
+			return true
+		}
 	}
 
-	messageType := binary.BigEndian.Uint16(avpData[6:8])
-
-	// Only accept specific L2TP control message types that confirm L2TP service
-	switch messageType {
-	case 2: // SCCRP (Start-Control-Connection-Reply) - server accepts connection
-		return true
-	case 4: // StopCCN (Stop-Control-Connection-Notification) - server rejects connection
-		return true
-	case 3: // SCCCN (Start-Control-Connection-Connected) - unlikely but valid
-		return true
-	default:
-		// Don't accept other message types as they might be ambiguous
-		return false
-	}
+	return false
 }
 
-// parseL2TPInfo extracts L2TP information from validated response
+// extractStringField extracts null-terminated string from byte array
+func extractStringField(data []byte) string {
+	// Find null terminator
+	nullIndex := bytes.IndexByte(data, 0)
+	if nullIndex == -1 {
+		nullIndex = len(data)
+	}
+
+	// Extract string and clean it
+	str := string(data[:nullIndex])
+	str = strings.TrimSpace(str)
+
+	// Remove non-printable characters except common ones
+	re := regexp.MustCompile(`[^\x20-\x7E]`)
+	str = re.ReplaceAllString(str, "")
+
+	return str
+}
+
+// identifyVendorFromString attempts to identify vendor from strings
+func identifyVendorFromString(hostName, vendorName string) string {
+	combined := strings.ToLower(hostName + " " + vendorName)
+
+	// Common L2TP implementations and their identifiers
+	vendors := map[string]string{
+		"mikrotik":   "MikroTik RouterOS",
+		"routeros":   "MikroTik RouterOS",
+		"cisco":      "Cisco",
+		"microsoft":  "Microsoft",
+		"windows":    "Microsoft Windows",
+		"linux":      "Linux L2TP",
+		"strongswan": "strongSwan",
+		"openswan":   "Openswan",
+		"freeswan":   "FreeS/WAN",
+		"xl2tpd":     "xl2tpd",
+		"rp-l2tp":    "Roaring Penguin L2TP",
+		"fortinet":   "Fortinet FortiGate",
+		"fortigate":  "Fortinet FortiGate",
+		"sonicwall":  "SonicWall",
+		"watchguard": "WatchGuard",
+		"zyxel":      "ZyXEL",
+		"draytek":    "DrayTek",
+		"tp-link":    "TP-Link",
+		"netgear":    "Netgear",
+		"linksys":    "Linksys",
+		"asus":       "ASUS",
+		"huawei":     "Huawei",
+		"juniper":    "Juniper Networks",
+		"pfsense":    "pfSense",
+		"opnsense":   "OPNsense",
+		"vyos":       "VyOS",
+		"ubiquiti":   "Ubiquiti",
+		"unifi":      "Ubiquiti UniFi",
+	}
+
+	for keyword, vendor := range vendors {
+		if strings.Contains(combined, keyword) {
+			return vendor
+		}
+	}
+
+	// If we have a vendor name but no match, return it as-is
+	if vendorName != "" {
+		return vendorName
+	}
+
+	return "Unknown"
+}
+
+// parseL2TPInfo extracts L2TP information and creates banner from validated response
 func parseL2TPInfo(response []byte) (map[string]any, string) {
 	info := make(map[string]any)
 
@@ -240,8 +281,8 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 	length := binary.BigEndian.Uint16(response[2:4])
 	tunnelID := binary.BigEndian.Uint16(response[4:6])
 	sessionID := binary.BigEndian.Uint16(response[6:8])
-	//ns := binary.BigEndian.Uint16(response[8:10])
-	//nr := binary.BigEndian.Uint16(response[10:12])
+	ns := binary.BigEndian.Uint16(response[8:10])
+	nr := binary.BigEndian.Uint16(response[10:12])
 
 	version := flags & 0x000F
 	info["L2TP_Version"] = fmt.Sprintf("%d", version)
@@ -249,27 +290,72 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 	info["Tunnel_ID"] = fmt.Sprintf("%d", tunnelID)
 	info["Session_ID"] = fmt.Sprintf("%d", sessionID)
 
-	// Parse message type from first AVP
+	// Parse AVPs
+	offset := 12
+	hostName := ""
+	vendorName := ""
 	messageType := ""
-	if len(response) > 18 {
-		avpData := response[12:]
-		msgType := binary.BigEndian.Uint16(avpData[6:8])
-		switch msgType {
-		case 2:
-			messageType = "SCCRP"
-			info["Response"] = "Start-Control-Connection-Reply"
-		case 3:
-			messageType = "SCCCN"
-			info["Response"] = "Start-Control-Connection-Connected"
-		case 4:
-			messageType = "StopCCN"
-			info["Response"] = "Stop-Control-Connection-Notification"
+
+	for offset < len(response)-6 {
+		// Parse AVP header
+		avpFlags := binary.BigEndian.Uint16(response[offset : offset+2])
+		vendorID := binary.BigEndian.Uint16(response[offset+2 : offset+4])
+		avpLength := binary.BigEndian.Uint16(response[offset+4 : offset+6])
+
+		if avpLength < 6 || offset+int(avpLength) > len(response) {
+			break
 		}
-		info["Message_Type"] = messageType
+
+		avpType := avpFlags & 0x3FFF
+
+		// Extract value
+		if avpLength > 6 {
+			valueBytes := response[offset+6 : offset+int(avpLength)]
+
+			switch avpType {
+			case 0: // Message Type
+				if len(valueBytes) >= 2 {
+					msgType := binary.BigEndian.Uint16(valueBytes[0:2])
+					switch msgType {
+					case 2:
+						messageType = "SCCRP"
+						info["Response"] = "Start-Control-Connection-Reply"
+					case 3:
+						messageType = "SCCCN"
+						info["Response"] = "Start-Control-Connection-Connected"
+					case 4:
+						messageType = "StopCCN"
+						info["Response"] = "Stop-Control-Connection-Notification"
+					}
+					info["Message_Type"] = messageType
+				}
+			case 7: // Host Name
+				hostName = extractStringField(valueBytes)
+				if hostName != "" {
+					info["Host_Name"] = hostName
+				}
+			case 8: // Vendor Name
+				vendorName = extractStringField(valueBytes)
+				if vendorName != "" {
+					info["Vendor_Name"] = vendorName
+				}
+			}
+		}
+
+		offset += int(avpLength)
 	}
 
-	// Create conservative product banner
+	// Create enhanced banner with vendor information
 	productBanner := fmt.Sprintf("l2tp tunneling_protocol %d", version)
+
+	vendor := identifyVendorFromString(hostName, vendorName)
+	if vendor != "Unknown" {
+		productBanner = fmt.Sprintf("l2tp %s", vendor)
+	} else if vendorName != "" {
+		productBanner = fmt.Sprintf("l2tp %s", vendorName)
+	} else if hostName != "" {
+		productBanner = fmt.Sprintf("l2tp %s", hostName)
+	}
 
 	return info, productBanner
 }
