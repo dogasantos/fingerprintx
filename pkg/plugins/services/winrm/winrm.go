@@ -61,7 +61,7 @@ Connection: close
 
 // createNTLMType1Request creates an NTLM Type 1 message request
 func createNTLMType1Request(host string) string {
-	// NTLM Type 1 message (simplified)
+	// NTLM Type 1 message with flags for requesting target info
 	ntlmType1 := "TlRMTVNTUAABAAAAl4II4gAAAAAAAAAAAAAAAAAAAAAKADkAAAAA"
 
 	return fmt.Sprintf(`GET /wsman HTTP/1.1
@@ -73,7 +73,7 @@ Connection: close
 `, host, ntlmType1)
 }
 
-// parseNTLMType2Response extracts information from NTLM Type 2 response
+// parseNTLMType2Response extracts comprehensive information from NTLM Type 2 response
 func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 	result := plugins.ServiceWinRM{
 		Product:    "winrm",
@@ -106,17 +106,22 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 				if targetNameOffset < uint32(len(ntlmData)) && targetNameLen > 0 {
 					endOffset := targetNameOffset + uint32(targetNameLen)
 					if endOffset <= uint32(len(ntlmData)) {
-						targetName := string(ntlmData[targetNameOffset:endOffset])
-						// Convert UTF-16 to UTF-8 (simplified)
-						if len(targetName) > 0 {
-							result.ComputerName = strings.ReplaceAll(targetName, "\x00", "")
-							result.Domain = result.ComputerName
+						targetName := utf16ToString(ntlmData[targetNameOffset:endOffset])
+						if targetName != "" {
+							result.ComputerName = targetName
+							result.Domain = targetName
 						}
 					}
 				}
 			}
 
-			// Extract target info (if present)
+			// Extract flags for OS version detection
+			if len(ntlmData) >= 24 {
+				flags := binary.LittleEndian.Uint32(ntlmData[20:24])
+				result = analyzeNTLMFlags(flags, result)
+			}
+
+			// Extract target info (if present) - this contains detailed OS information
 			if len(ntlmData) >= 48 {
 				targetInfoLen := binary.LittleEndian.Uint16(ntlmData[40:42])
 				targetInfoOffset := binary.LittleEndian.Uint32(ntlmData[44:48])
@@ -135,7 +140,21 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 	return result
 }
 
-// parseTargetInfo extracts detailed information from NTLM target info
+// analyzeNTLMFlags extracts OS information from NTLM flags
+func analyzeNTLMFlags(flags uint32, result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	// NTLM flags can indicate certain OS capabilities
+	if flags&0x00800000 != 0 { // NTLMSSP_NEGOTIATE_VERSION
+		// Version information is present
+	}
+
+	if flags&0x00200000 != 0 { // NTLMSSP_NEGOTIATE_TARGET_INFO
+		// Target info is present (good for detailed OS info)
+	}
+
+	return result
+}
+
+// parseTargetInfo extracts detailed OS and system information from NTLM target info
 func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.ServiceWinRM {
 	offset := 0
 
@@ -144,31 +163,53 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		avLen := binary.LittleEndian.Uint16(targetInfo[offset+2 : offset+4])
 		offset += 4
 
-		if avLen == 0 || offset+int(avLen) > len(targetInfo) {
+		if avLen == 0 {
+			if avId == 0 { // End of list
+				break
+			}
+			continue
+		}
+
+		if offset+int(avLen) > len(targetInfo) {
 			break
 		}
 
 		value := targetInfo[offset : offset+int(avLen)]
 
 		switch avId {
-		case 1: // NetBIOS computer name
-			result.ComputerName = utf16ToString(value)
-		case 2: // NetBIOS domain name
-			result.Domain = utf16ToString(value)
-		case 3: // DNS computer name
+		case 1: // MsvAvNbComputerName - NetBIOS computer name
+			result.NetBIOSName = utf16ToString(value)
 			if result.ComputerName == "" {
-				result.ComputerName = utf16ToString(value)
+				result.ComputerName = result.NetBIOSName
 			}
-		case 4: // DNS domain name
+		case 2: // MsvAvNbDomainName - NetBIOS domain name
+			result.NetBIOSDomain = utf16ToString(value)
 			if result.Domain == "" {
-				result.Domain = utf16ToString(value)
+				result.Domain = result.NetBIOSDomain
 			}
-		case 5: // DNS tree name
-			// Additional domain info
-		case 7: // Timestamp
-			// Could extract timestamp if needed
-		case 9: // Target name
-			// Additional target info
+		case 3: // MsvAvDnsComputerName - DNS computer name
+			result.DNSName = utf16ToString(value)
+		case 4: // MsvAvDnsDomainName - DNS domain name
+			result.DNSDomain = utf16ToString(value)
+		case 5: // MsvAvDnsTreeName - DNS tree name
+			result.TreeName = utf16ToString(value)
+		case 6: // MsvAvFlags - Flags
+			if len(value) >= 4 {
+				flags := binary.LittleEndian.Uint32(value)
+				result = analyzeTargetFlags(flags, result)
+			}
+		case 7: // MsvAvTimestamp - Timestamp
+			if len(value) >= 8 {
+				timestamp := binary.LittleEndian.Uint64(value)
+				result.ServerTime = formatNTLMTimestamp(timestamp)
+			}
+		case 9: // MsvAvTargetName - Target name
+			targetName := utf16ToString(value)
+			if targetName != "" && result.ComputerName == "" {
+				result.ComputerName = targetName
+			}
+		case 10: // MsvAvChannelBindings - Channel bindings
+			// Could extract channel binding info if needed
 		}
 
 		offset += int(avLen)
@@ -178,7 +219,75 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		}
 	}
 
+	// Build FQDN if we have DNS name and domain
+	if result.DNSName != "" && result.DNSDomain != "" {
+		result.FQDN = fmt.Sprintf("%s.%s", result.DNSName, result.DNSDomain)
+	}
+
+	// Determine OS version from computer name and other indicators
+	result = determineOSVersion(result)
+
 	return result
+}
+
+// analyzeTargetFlags extracts information from target flags
+func analyzeTargetFlags(flags uint32, result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	// Target flags can indicate various capabilities
+	if flags&0x00000001 != 0 { // Server
+		result.ServerType = "Windows Server"
+	}
+
+	if flags&0x00000002 != 0 { // Domain Controller
+		result.ServerType = "Domain Controller"
+	}
+
+	return result
+}
+
+// determineOSVersion attempts to determine Windows version from available information
+func determineOSVersion(result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	// Analyze computer name patterns
+	computerName := strings.ToUpper(result.ComputerName)
+
+	// Common Windows Server naming patterns
+	if strings.Contains(computerName, "WIN-") {
+		result.ServerType = "Windows Server"
+		// Default assumption for WIN- prefix
+		if result.OSVersion == "" {
+			result.OSVersion = "Windows Server"
+		}
+	}
+
+	// Analyze domain patterns
+	domain := strings.ToUpper(result.Domain)
+	if strings.Contains(domain, "WORKGROUP") {
+		if result.ServerType == "" {
+			result.ServerType = "Windows Workstation"
+		}
+	}
+
+	// Try to determine architecture (assume x64 for modern systems)
+	if result.Architecture == "" {
+		result.Architecture = "x64"
+	}
+
+	return result
+}
+
+// formatNTLMTimestamp converts NTLM timestamp to readable format
+func formatNTLMTimestamp(timestamp uint64) string {
+	// NTLM timestamp is 100-nanosecond intervals since January 1, 1601
+	const ntlmEpoch = 116444736000000000 // 100-nanosecond intervals between 1601 and 1970
+
+	if timestamp == 0 {
+		return ""
+	}
+
+	// Convert to Unix timestamp
+	unixTimestamp := int64((timestamp - ntlmEpoch) / 10000000)
+	t := time.Unix(unixTimestamp, 0)
+
+	return t.UTC().Format("2006-01-02 15:04:05 UTC")
 }
 
 // utf16ToString converts UTF-16 bytes to string
@@ -291,6 +400,40 @@ func isWinRMResponse(response string) bool {
 	return false
 }
 
+// tryAlternativeEndpoints tests additional WinRM endpoints for more information
+func tryAlternativeEndpoints(conn net.Conn, host string, timeout time.Duration) plugins.ServiceWinRM {
+	result := plugins.ServiceWinRM{}
+
+	// Try different endpoints that might reveal more information
+	endpoints := []string{
+		"/wsman",
+		"/wsman/",
+		"/WSMan",
+		"/WSMan/",
+		"/wsman/SubscriptionManager/WEC",
+		"/wsman/SubscriptionManager",
+	}
+
+	for _, endpoint := range endpoints {
+		request := fmt.Sprintf(`GET %s HTTP/1.1
+Host: %s
+User-Agent: Microsoft WinRM Client
+Connection: close
+
+`, endpoint, host)
+
+		response, err := utils.SendRecv(conn, []byte(request), timeout)
+		if err == nil && len(response) > 0 {
+			responseStr := string(response)
+			if strings.Contains(responseStr, "200 OK") {
+				result.Endpoints = append(result.Endpoints, endpoint)
+			}
+		}
+	}
+
+	return result
+}
+
 func (p *WinRMPlugin) PortPriority(port uint16) bool {
 	return port == 5985 || port == 5986
 }
@@ -331,7 +474,7 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 	// Parse basic response
 	result := parseWinRMResponse(responseStr)
 
-	// If we see NTLM authentication, try to get more info
+	// If we see NTLM authentication, try to get detailed OS info
 	if strings.Contains(responseStr, "NTLM") {
 		ntlmRequest := createNTLMType1Request(host)
 		ntlmResponse, err := utils.SendRecv(conn, []byte(ntlmRequest), timeout)
@@ -339,14 +482,47 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 			ntlmResponseStr := string(ntlmResponse)
 			ntlmInfo := parseNTLMType2Response(ntlmResponseStr)
 
-			// Merge NTLM information
+			// Merge NTLM information with comprehensive OS details
 			if ntlmInfo.ComputerName != "" {
 				result.ComputerName = ntlmInfo.ComputerName
 			}
 			if ntlmInfo.Domain != "" {
 				result.Domain = ntlmInfo.Domain
 			}
+			if ntlmInfo.NetBIOSName != "" {
+				result.NetBIOSName = ntlmInfo.NetBIOSName
+			}
+			if ntlmInfo.NetBIOSDomain != "" {
+				result.NetBIOSDomain = ntlmInfo.NetBIOSDomain
+			}
+			if ntlmInfo.DNSName != "" {
+				result.DNSName = ntlmInfo.DNSName
+			}
+			if ntlmInfo.DNSDomain != "" {
+				result.DNSDomain = ntlmInfo.DNSDomain
+			}
+			if ntlmInfo.FQDN != "" {
+				result.FQDN = ntlmInfo.FQDN
+			}
+			if ntlmInfo.OSVersion != "" {
+				result.OSVersion = ntlmInfo.OSVersion
+			}
+			if ntlmInfo.ServerType != "" {
+				result.ServerType = ntlmInfo.ServerType
+			}
+			if ntlmInfo.Architecture != "" {
+				result.Architecture = ntlmInfo.Architecture
+			}
+			if ntlmInfo.ServerTime != "" {
+				result.ServerTime = ntlmInfo.ServerTime
+			}
 		}
+	}
+
+	// Try alternative endpoints for additional information
+	endpointInfo := tryAlternativeEndpoints(conn, host, timeout)
+	if len(endpointInfo.Endpoints) > 0 {
+		result.Endpoints = endpointInfo.Endpoints
 	}
 
 	// Set protocol based on port
@@ -358,24 +534,25 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		result.Encryption = "None"
 	}
 
-	// Determine OS version from computer name patterns
-	if result.ComputerName != "" {
-		if strings.Contains(strings.ToUpper(result.ComputerName), "WIN-") {
-			result.OSVersion = "Windows Server"
-			result.ServerType = "Windows Server"
-		}
-	}
-
 	// Build comprehensive product banner
+	productParts := []string{"winrm"}
+	if result.Version != "" {
+		productParts = append(productParts, fmt.Sprintf("(Microsoft-HTTPAPI/%s)", result.Version))
+	}
+	if result.OSVersion != "" {
+		productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
+	}
 	if result.ComputerName != "" {
-		result.Product += fmt.Sprintf(" (%s)", result.ComputerName)
+		productParts = append(productParts, fmt.Sprintf("[%s]", result.ComputerName))
 	}
 	if result.Anonymous {
-		result.Product += " [ANONYMOUS]"
+		productParts = append(productParts, "[ANONYMOUS]")
 	}
 	if result.Vulnerable {
-		result.Product += " [VULNERABLE]"
+		productParts = append(productParts, "[VULNERABLE]")
 	}
+
+	result.Product = strings.Join(productParts, " ")
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
 }

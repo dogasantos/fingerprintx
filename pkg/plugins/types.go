@@ -925,9 +925,23 @@ type ServiceWinRM struct {
 
 	// Server Information
 	ServerType   string `json:"serverType,omitempty"`
-	OSVersion    string `json:"osVersion,omitempty"`
 	ComputerName string `json:"computerName,omitempty"`
 	Domain       string `json:"domain,omitempty"`
+	FQDN         string `json:"fqdn,omitempty"`
+
+	// Detailed OS Information
+	OSVersion    string `json:"osVersion,omitempty"`    // e.g., "Windows Server 2016"
+	OSBuild      string `json:"osBuild,omitempty"`      // e.g., "10.0.14393"
+	OSRelease    string `json:"osRelease,omitempty"`    // e.g., "1607"
+	OSEdition    string `json:"osEdition,omitempty"`    // e.g., "Standard", "Datacenter"
+	Architecture string `json:"architecture,omitempty"` // e.g., "x64", "x86"
+
+	// NetBIOS Information
+	NetBIOSName   string `json:"netbiosName,omitempty"`   // NetBIOS computer name
+	NetBIOSDomain string `json:"netbiosDomain,omitempty"` // NetBIOS domain name
+	DNSName       string `json:"dnsName,omitempty"`       // DNS computer name
+	DNSDomain     string `json:"dnsDomain,omitempty"`     // DNS domain name
+	TreeName      string `json:"treeName,omitempty"`      // DNS tree name
 
 	// Protocol Information
 	Protocol     string `json:"protocol,omitempty"`     // HTTP or HTTPS
@@ -954,4 +968,7 @@ type ServiceWinRM struct {
 	// Additional Information
 	PowerShell  bool `json:"powershell,omitempty"`  // PowerShell remoting enabled
 	RemoteShell bool `json:"remoteShell,omitempty"` // Remote shell access
+
+	// Timestamp Information
+	ServerTime string `json:"serverTime,omitempty"` // Server timestamp from NTLM
 }
