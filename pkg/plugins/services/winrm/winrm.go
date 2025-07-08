@@ -17,7 +17,9 @@ package winrm
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -59,10 +61,21 @@ Connection: close
 `, host)
 }
 
-// createNTLMType1Request creates an NTLM Type 1 message request
+// createNTLMType1Request creates an NTLM Type 1 message request with proper flags
 func createNTLMType1Request(host string) string {
-	// NTLM Type 1 message with flags for requesting target info
-	ntlmType1 := "TlRMTVNTUAABAAAAl4II4gAAAAAAAAAAAAAAAAAAAAAKADkAAAAA"
+	// Create a proper NTLM Type 1 message with flags requesting target info
+	// NTLMSSP signature (8 bytes) + Type (4 bytes) + Flags (4 bytes) + Domain (8 bytes) + Workstation (8 bytes)
+
+	ntlmType1 := make([]byte, 32)
+	copy(ntlmType1[0:8], "NTLMSSP\x00")                     // Signature
+	binary.LittleEndian.PutUint32(ntlmType1[8:12], 1)       // Type 1
+	binary.LittleEndian.PutUint32(ntlmType1[12:16], 0xb207) // Flags: Request target info, Unicode, OEM
+	// Domain and workstation fields (empty)
+
+	ntlmType1B64 := base64.StdEncoding.EncodeToString(ntlmType1)
+
+	log.Printf("WINRM DEBUG: Sending NTLM Type 1 message: %s", ntlmType1B64)
+	log.Printf("WINRM DEBUG: NTLM Type 1 hex: %s", hex.EncodeToString(ntlmType1))
 
 	return fmt.Sprintf(`GET /wsman HTTP/1.1
 Host: %s
@@ -70,7 +83,7 @@ Authorization: NTLM %s
 User-Agent: Microsoft WinRM Client
 Connection: close
 
-`, host, ntlmType1)
+`, host, ntlmType1B64)
 }
 
 // parseNTLMType2Response extracts comprehensive information from NTLM Type 2 response
@@ -81,32 +94,54 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 		Vulnerable: false,
 	}
 
+	log.Printf("WINRM DEBUG: Analyzing NTLM response")
+	log.Printf("WINRM DEBUG: Response length: %d", len(response))
+
 	// Look for NTLM Type 2 message in WWW-Authenticate header
 	ntlmRegex := regexp.MustCompile(`WWW-Authenticate:\s*NTLM\s+([A-Za-z0-9+/=]+)`)
 	matches := ntlmRegex.FindStringSubmatch(response)
 	if len(matches) < 2 {
+		log.Printf("WINRM DEBUG: No NTLM Type 2 message found in response")
 		return result
 	}
 
+	log.Printf("WINRM DEBUG: Found NTLM Type 2 message: %s", matches[1])
+
 	// Decode base64 NTLM message
 	ntlmData, err := base64.StdEncoding.DecodeString(matches[1])
-	if err != nil || len(ntlmData) < 32 {
+	if err != nil {
+		log.Printf("WINRM DEBUG: Failed to decode NTLM message: %v", err)
+		return result
+	}
+
+	log.Printf("WINRM DEBUG: NTLM Type 2 length: %d", len(ntlmData))
+	log.Printf("WINRM DEBUG: NTLM Type 2 hex: %s", hex.EncodeToString(ntlmData))
+
+	if len(ntlmData) < 32 {
+		log.Printf("WINRM DEBUG: NTLM message too short")
 		return result
 	}
 
 	// Parse NTLM Type 2 message structure
 	if len(ntlmData) >= 8 && string(ntlmData[0:8]) == "NTLMSSP\x00" {
 		messageType := binary.LittleEndian.Uint32(ntlmData[8:12])
+		log.Printf("WINRM DEBUG: NTLM message type: %d", messageType)
+
 		if messageType == 2 { // Type 2 message
+			log.Printf("WINRM DEBUG: Processing NTLM Type 2 message")
+
 			// Extract target name (domain/computer name)
 			if len(ntlmData) >= 20 {
 				targetNameLen := binary.LittleEndian.Uint16(ntlmData[12:14])
 				targetNameOffset := binary.LittleEndian.Uint32(ntlmData[16:20])
 
+				log.Printf("WINRM DEBUG: Target name length: %d, offset: %d", targetNameLen, targetNameOffset)
+
 				if targetNameOffset < uint32(len(ntlmData)) && targetNameLen > 0 {
 					endOffset := targetNameOffset + uint32(targetNameLen)
 					if endOffset <= uint32(len(ntlmData)) {
 						targetName := utf16ToString(ntlmData[targetNameOffset:endOffset])
+						log.Printf("WINRM DEBUG: Target name: %s", targetName)
 						if targetName != "" {
 							result.ComputerName = targetName
 							result.Domain = targetName
@@ -115,9 +150,10 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 				}
 			}
 
-			// Extract flags for OS version detection
+			// Extract flags
 			if len(ntlmData) >= 24 {
 				flags := binary.LittleEndian.Uint32(ntlmData[20:24])
+				log.Printf("WINRM DEBUG: NTLM flags: 0x%08x", flags)
 				result = analyzeNTLMFlags(flags, result)
 			}
 
@@ -126,15 +162,28 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 				targetInfoLen := binary.LittleEndian.Uint16(ntlmData[40:42])
 				targetInfoOffset := binary.LittleEndian.Uint32(ntlmData[44:48])
 
+				log.Printf("WINRM DEBUG: Target info length: %d, offset: %d", targetInfoLen, targetInfoOffset)
+
 				if targetInfoOffset < uint32(len(ntlmData)) && targetInfoLen > 0 {
 					endOffset := targetInfoOffset + uint32(targetInfoLen)
 					if endOffset <= uint32(len(ntlmData)) {
 						targetInfo := ntlmData[targetInfoOffset:endOffset]
+						log.Printf("WINRM DEBUG: Target info hex: %s", hex.EncodeToString(targetInfo))
 						result = parseTargetInfo(targetInfo, result)
+					} else {
+						log.Printf("WINRM DEBUG: Target info extends beyond message boundary")
 					}
+				} else {
+					log.Printf("WINRM DEBUG: No target info present or invalid offset")
 				}
+			} else {
+				log.Printf("WINRM DEBUG: NTLM message too short for target info")
 			}
+		} else {
+			log.Printf("WINRM DEBUG: Not an NTLM Type 2 message")
 		}
+	} else {
+		log.Printf("WINRM DEBUG: Invalid NTLM signature")
 	}
 
 	return result
@@ -142,13 +191,22 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 
 // analyzeNTLMFlags extracts OS information from NTLM flags
 func analyzeNTLMFlags(flags uint32, result plugins.ServiceWinRM) plugins.ServiceWinRM {
-	// NTLM flags can indicate certain OS capabilities
+	log.Printf("WINRM DEBUG: Analyzing NTLM flags: 0x%08x", flags)
+
 	if flags&0x00800000 != 0 { // NTLMSSP_NEGOTIATE_VERSION
-		// Version information is present
+		log.Printf("WINRM DEBUG: Version information is present")
 	}
 
 	if flags&0x00200000 != 0 { // NTLMSSP_NEGOTIATE_TARGET_INFO
-		// Target info is present (good for detailed OS info)
+		log.Printf("WINRM DEBUG: Target info is present")
+	}
+
+	if flags&0x00000001 != 0 { // NTLMSSP_NEGOTIATE_UNICODE
+		log.Printf("WINRM DEBUG: Unicode support")
+	}
+
+	if flags&0x00000002 != 0 { // NTLMSSP_NEGOTIATE_OEM
+		log.Printf("WINRM DEBUG: OEM support")
 	}
 
 	return result
@@ -156,6 +214,8 @@ func analyzeNTLMFlags(flags uint32, result plugins.ServiceWinRM) plugins.Service
 
 // parseTargetInfo extracts detailed OS and system information from NTLM target info
 func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	log.Printf("WINRM DEBUG: Parsing target info (%d bytes)", len(targetInfo))
+
 	offset := 0
 
 	for offset+4 <= len(targetInfo) {
@@ -163,53 +223,66 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		avLen := binary.LittleEndian.Uint16(targetInfo[offset+2 : offset+4])
 		offset += 4
 
+		log.Printf("WINRM DEBUG: AV pair - ID: %d, Length: %d", avId, avLen)
+
 		if avLen == 0 {
 			if avId == 0 { // End of list
+				log.Printf("WINRM DEBUG: End of AV pairs")
 				break
 			}
 			continue
 		}
 
 		if offset+int(avLen) > len(targetInfo) {
+			log.Printf("WINRM DEBUG: AV pair extends beyond target info")
 			break
 		}
 
 		value := targetInfo[offset : offset+int(avLen)]
+		log.Printf("WINRM DEBUG: AV pair value hex: %s", hex.EncodeToString(value))
 
 		switch avId {
 		case 1: // MsvAvNbComputerName - NetBIOS computer name
 			result.NetBIOSName = utf16ToString(value)
+			log.Printf("WINRM DEBUG: NetBIOS computer name: %s", result.NetBIOSName)
 			if result.ComputerName == "" {
 				result.ComputerName = result.NetBIOSName
 			}
 		case 2: // MsvAvNbDomainName - NetBIOS domain name
 			result.NetBIOSDomain = utf16ToString(value)
+			log.Printf("WINRM DEBUG: NetBIOS domain name: %s", result.NetBIOSDomain)
 			if result.Domain == "" {
 				result.Domain = result.NetBIOSDomain
 			}
 		case 3: // MsvAvDnsComputerName - DNS computer name
 			result.DNSName = utf16ToString(value)
+			log.Printf("WINRM DEBUG: DNS computer name: %s", result.DNSName)
 		case 4: // MsvAvDnsDomainName - DNS domain name
 			result.DNSDomain = utf16ToString(value)
+			log.Printf("WINRM DEBUG: DNS domain name: %s", result.DNSDomain)
 		case 5: // MsvAvDnsTreeName - DNS tree name
 			result.TreeName = utf16ToString(value)
+			log.Printf("WINRM DEBUG: DNS tree name: %s", result.TreeName)
 		case 6: // MsvAvFlags - Flags
 			if len(value) >= 4 {
 				flags := binary.LittleEndian.Uint32(value)
+				log.Printf("WINRM DEBUG: Target flags: 0x%08x", flags)
 				result = analyzeTargetFlags(flags, result)
 			}
 		case 7: // MsvAvTimestamp - Timestamp
 			if len(value) >= 8 {
 				timestamp := binary.LittleEndian.Uint64(value)
 				result.ServerTime = formatNTLMTimestamp(timestamp)
+				log.Printf("WINRM DEBUG: Server timestamp: %s", result.ServerTime)
 			}
 		case 9: // MsvAvTargetName - Target name
 			targetName := utf16ToString(value)
+			log.Printf("WINRM DEBUG: Target name: %s", targetName)
 			if targetName != "" && result.ComputerName == "" {
 				result.ComputerName = targetName
 			}
-		case 10: // MsvAvChannelBindings - Channel bindings
-			// Could extract channel binding info if needed
+		default:
+			log.Printf("WINRM DEBUG: Unknown AV pair ID: %d", avId)
 		}
 
 		offset += int(avLen)
@@ -222,6 +295,7 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 	// Build FQDN if we have DNS name and domain
 	if result.DNSName != "" && result.DNSDomain != "" {
 		result.FQDN = fmt.Sprintf("%s.%s", result.DNSName, result.DNSDomain)
+		log.Printf("WINRM DEBUG: Built FQDN: %s", result.FQDN)
 	}
 
 	// Determine OS version from computer name and other indicators
@@ -232,13 +306,16 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 
 // analyzeTargetFlags extracts information from target flags
 func analyzeTargetFlags(flags uint32, result plugins.ServiceWinRM) plugins.ServiceWinRM {
-	// Target flags can indicate various capabilities
+	log.Printf("WINRM DEBUG: Analyzing target flags: 0x%08x", flags)
+
 	if flags&0x00000001 != 0 { // Server
 		result.ServerType = "Windows Server"
+		log.Printf("WINRM DEBUG: Detected Windows Server")
 	}
 
 	if flags&0x00000002 != 0 { // Domain Controller
 		result.ServerType = "Domain Controller"
+		log.Printf("WINRM DEBUG: Detected Domain Controller")
 	}
 
 	return result
@@ -246,13 +323,16 @@ func analyzeTargetFlags(flags uint32, result plugins.ServiceWinRM) plugins.Servi
 
 // determineOSVersion attempts to determine Windows version from available information
 func determineOSVersion(result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	log.Printf("WINRM DEBUG: Determining OS version")
+
 	// Analyze computer name patterns
 	computerName := strings.ToUpper(result.ComputerName)
+	log.Printf("WINRM DEBUG: Computer name (upper): %s", computerName)
 
 	// Common Windows Server naming patterns
 	if strings.Contains(computerName, "WIN-") {
 		result.ServerType = "Windows Server"
-		// Default assumption for WIN- prefix
+		log.Printf("WINRM DEBUG: Detected Windows Server from WIN- prefix")
 		if result.OSVersion == "" {
 			result.OSVersion = "Windows Server"
 		}
@@ -260,15 +340,18 @@ func determineOSVersion(result plugins.ServiceWinRM) plugins.ServiceWinRM {
 
 	// Analyze domain patterns
 	domain := strings.ToUpper(result.Domain)
+	log.Printf("WINRM DEBUG: Domain (upper): %s", domain)
 	if strings.Contains(domain, "WORKGROUP") {
 		if result.ServerType == "" {
 			result.ServerType = "Windows Workstation"
+			log.Printf("WINRM DEBUG: Detected Windows Workstation from WORKGROUP")
 		}
 	}
 
 	// Try to determine architecture (assume x64 for modern systems)
 	if result.Architecture == "" {
 		result.Architecture = "x64"
+		log.Printf("WINRM DEBUG: Assumed x64 architecture")
 	}
 
 	return result
@@ -317,12 +400,15 @@ func parseWinRMResponse(response string) plugins.ServiceWinRM {
 		Vulnerable: false,
 	}
 
+	log.Printf("WINRM DEBUG: Parsing basic WinRM response")
+
 	// Check for Microsoft-HTTPAPI server header (strong WinRM indicator)
 	if strings.Contains(response, "Microsoft-HTTPAPI") {
 		serverRegex := regexp.MustCompile(`Server:\s*Microsoft-HTTPAPI/([0-9.]+)`)
 		if matches := serverRegex.FindStringSubmatch(response); len(matches) > 1 {
 			result.Version = matches[1]
 			result.Product = fmt.Sprintf("winrm (Microsoft-HTTPAPI/%s)", matches[1])
+			log.Printf("WINRM DEBUG: Found Microsoft-HTTPAPI version: %s", matches[1])
 		}
 	}
 
@@ -336,41 +422,25 @@ func parseWinRMResponse(response string) plugins.ServiceWinRM {
 	// Check for authentication methods
 	authMethods := []string{}
 	if strings.Contains(response, "WWW-Authenticate:") {
+		log.Printf("WINRM DEBUG: Found WWW-Authenticate header")
 		if strings.Contains(response, "NTLM") {
 			authMethods = append(authMethods, "NTLM")
+			log.Printf("WINRM DEBUG: NTLM authentication supported")
 		}
 		if strings.Contains(response, "Negotiate") {
 			authMethods = append(authMethods, "Negotiate")
+			log.Printf("WINRM DEBUG: Negotiate authentication supported")
 		}
 		if strings.Contains(response, "Basic") {
 			authMethods = append(authMethods, "Basic")
+			log.Printf("WINRM DEBUG: Basic authentication supported")
 		}
 		if strings.Contains(response, "Digest") {
 			authMethods = append(authMethods, "Digest")
+			log.Printf("WINRM DEBUG: Digest authentication supported")
 		}
 	}
 	result.AuthMethods = authMethods
-
-	// Check response codes
-	if strings.Contains(response, "401 Unauthorized") {
-		// Normal for WinRM - requires authentication
-	} else if strings.Contains(response, "404 Not Found") {
-		// Also normal for WinRM when accessing wrong endpoint
-	} else if strings.Contains(response, "200 OK") {
-		// Might indicate anonymous access
-		result.Anonymous = true
-		result.Vulnerable = true
-	}
-
-	// Check for weak authentication over HTTP
-	if result.Protocol == "HTTP" && len(authMethods) > 0 {
-		for _, method := range authMethods {
-			if method == "Basic" {
-				result.Vulnerable = true
-				break
-			}
-		}
-	}
 
 	return result
 }
@@ -387,6 +457,7 @@ func isWinRMResponse(response string) bool {
 
 	for _, indicator := range indicators {
 		if strings.Contains(response, indicator) {
+			log.Printf("WINRM DEBUG: Found WinRM indicator: %s", indicator)
 			return true
 		}
 	}
@@ -394,44 +465,11 @@ func isWinRMResponse(response string) bool {
 	// Check for typical WinRM response patterns
 	if (strings.Contains(response, "401 Unauthorized") || strings.Contains(response, "404 Not Found")) &&
 		strings.Contains(response, "NTLM") {
+		log.Printf("WINRM DEBUG: Found WinRM pattern: 401/404 + NTLM")
 		return true
 	}
 
 	return false
-}
-
-// tryAlternativeEndpoints tests additional WinRM endpoints for more information
-func tryAlternativeEndpoints(conn net.Conn, host string, timeout time.Duration) plugins.ServiceWinRM {
-	result := plugins.ServiceWinRM{}
-
-	// Try different endpoints that might reveal more information
-	endpoints := []string{
-		"/wsman",
-		"/wsman/",
-		"/WSMan",
-		"/WSMan/",
-		"/wsman/SubscriptionManager/WEC",
-		"/wsman/SubscriptionManager",
-	}
-
-	for _, endpoint := range endpoints {
-		request := fmt.Sprintf(`GET %s HTTP/1.1
-Host: %s
-User-Agent: Microsoft WinRM Client
-Connection: close
-
-`, endpoint, host)
-
-		response, err := utils.SendRecv(conn, []byte(request), timeout)
-		if err == nil && len(response) > 0 {
-			responseStr := string(response)
-			if strings.Contains(responseStr, "200 OK") {
-				result.Endpoints = append(result.Endpoints, endpoint)
-			}
-		}
-	}
-
-	return result
 }
 
 func (p *WinRMPlugin) PortPriority(port uint16) bool {
@@ -457,37 +495,48 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		host = fmt.Sprintf("%s:%d", target.Host, port)
 	}
 
+	log.Printf("WINRM DEBUG: Starting WinRM detection on %s", host)
+
 	// First, try a basic request to /wsman
 	basicRequest := createBasicWinRMRequest(host)
 	response, err := utils.SendRecv(conn, []byte(basicRequest), timeout)
 	if err != nil {
+		log.Printf("WINRM DEBUG: Basic request failed: %v", err)
 		return nil, nil
 	}
 
 	responseStr := string(response)
+	log.Printf("WINRM DEBUG: Basic response length: %d", len(responseStr))
 
 	// Check if this looks like WinRM
 	if !isWinRMResponse(responseStr) {
+		log.Printf("WINRM DEBUG: Response does not look like WinRM")
 		return nil, nil
 	}
+
+	log.Printf("WINRM DEBUG: Confirmed WinRM service")
 
 	// Parse basic response
 	result := parseWinRMResponse(responseStr)
 
 	// If we see NTLM authentication, try to get detailed OS info
 	if strings.Contains(responseStr, "NTLM") {
+		log.Printf("WINRM DEBUG: NTLM authentication detected, attempting to extract OS info")
 		ntlmRequest := createNTLMType1Request(host)
 		ntlmResponse, err := utils.SendRecv(conn, []byte(ntlmRequest), timeout)
 		if err == nil {
 			ntlmResponseStr := string(ntlmResponse)
+			log.Printf("WINRM DEBUG: NTLM response length: %d", len(ntlmResponseStr))
 			ntlmInfo := parseNTLMType2Response(ntlmResponseStr)
 
 			// Merge NTLM information with comprehensive OS details
 			if ntlmInfo.ComputerName != "" {
 				result.ComputerName = ntlmInfo.ComputerName
+				log.Printf("WINRM DEBUG: Set computer name: %s", result.ComputerName)
 			}
 			if ntlmInfo.Domain != "" {
 				result.Domain = ntlmInfo.Domain
+				log.Printf("WINRM DEBUG: Set domain: %s", result.Domain)
 			}
 			if ntlmInfo.NetBIOSName != "" {
 				result.NetBIOSName = ntlmInfo.NetBIOSName
@@ -516,13 +565,11 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 			if ntlmInfo.ServerTime != "" {
 				result.ServerTime = ntlmInfo.ServerTime
 			}
+		} else {
+			log.Printf("WINRM DEBUG: NTLM request failed: %v", err)
 		}
-	}
-
-	// Try alternative endpoints for additional information
-	endpointInfo := tryAlternativeEndpoints(conn, host, timeout)
-	if len(endpointInfo.Endpoints) > 0 {
-		result.Endpoints = endpointInfo.Endpoints
+	} else {
+		log.Printf("WINRM DEBUG: No NTLM authentication detected")
 	}
 
 	// Set protocol based on port
@@ -553,6 +600,9 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 	}
 
 	result.Product = strings.Join(productParts, " ")
+
+	log.Printf("WINRM DEBUG: Final result - Product: %s", result.Product)
+	log.Printf("WINRM DEBUG: Computer: %s, Domain: %s, OS: %s", result.ComputerName, result.Domain, result.OSVersion)
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
 }
