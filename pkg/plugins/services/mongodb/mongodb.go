@@ -136,7 +136,7 @@ func isValidMongoDBResponse(response []byte) bool {
 	}
 
 	// Parse OP_REPLY structure
-	responseFlags := binary.LittleEndian.Uint32(response[16:20])
+	_ = binary.LittleEndian.Uint32(response[16:20]) // responseFlags - read but not used
 	numberReturned := binary.LittleEndian.Uint32(response[32:36])
 
 	// Don't reject on query failure - we want to see error messages too
