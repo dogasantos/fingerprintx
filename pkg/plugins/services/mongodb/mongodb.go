@@ -16,7 +16,9 @@ package mongodb
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -425,9 +427,12 @@ func parseMongoDBResponse(response []byte, command string) plugins.ServiceMongoD
 
 	// For listDatabases command, extract database names and set vulnerability
 	if command == "listDatabases" {
+		log.Printf("MONGODB DEBUG: Processing listDatabases response")
 		result.Databases = extractDatabaseNames(bsonData)
+		log.Printf("MONGODB DEBUG: Extracted %d databases: %v", len(result.Databases), result.Databases)
 		if len(result.Databases) > 0 {
 			result.Vulnerable = true
+			log.Printf("MONGODB DEBUG: Setting vulnerable = true")
 		}
 	}
 
@@ -503,33 +508,69 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 
 	// If we have basic MongoDB detection and authentication is disabled, test for vulnerability
 	if bestResult != nil && bestResult.Authentication == "disabled" {
+		log.Printf("MONGODB DEBUG: Authentication is disabled, testing vulnerability")
+
 		// Try listDatabases to check if we can access database list without authentication
 		requestID := int32(999)
 		message := createMongoDBQuery("listDatabases", requestID)
 		if message != nil {
+			log.Printf("MONGODB DEBUG: Sending listDatabases command")
 			response, err := utils.SendRecv(conn, message, timeout)
-			if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
-				// Check if the response contains an error or actual database list
-				bsonData := response[36:]
-				errorMsg := extractStringFromBSON(bsonData, "errmsg")
+			if err != nil {
+				log.Printf("MONGODB DEBUG: listDatabases error: %v", err)
+			} else {
+				log.Printf("MONGODB DEBUG: listDatabases response received (%d bytes)", len(response))
 
-				// If no error message, try to extract databases
-				if errorMsg == "" {
-					dbResult := parseMongoDBResponse(response, "listDatabases")
-					if len(dbResult.Databases) > 0 {
-						bestResult.Databases = dbResult.Databases
-						bestResult.Vulnerable = true
-						// Update product banner to include vulnerability status
-						if !strings.Contains(bestResult.Product, "[VULNERABLE]") {
-							bestResult.Product += " [VULNERABLE]"
-						}
+				if len(response) > 0 && isValidMongoDBResponse(response) {
+					log.Printf("MONGODB DEBUG: Valid MongoDB response for listDatabases")
+
+					// Show hex dump of response
+					bsonData := response[36:]
+					dumpLen := len(bsonData)
+					if dumpLen > 200 {
+						dumpLen = 200
 					}
+					log.Printf("MONGODB DEBUG: listDatabases BSON hex dump (first %d bytes): %s", dumpLen, hex.EncodeToString(bsonData[:dumpLen]))
+
+					// Check if the response contains an error or actual database list
+					errorMsg := extractStringFromBSON(bsonData, "errmsg")
+					log.Printf("MONGODB DEBUG: Error message: '%s'", errorMsg)
+
+					// If no error message, try to extract databases
+					if errorMsg == "" {
+						log.Printf("MONGODB DEBUG: No error message, attempting to extract databases")
+						dbResult := parseMongoDBResponse(response, "listDatabases")
+						if len(dbResult.Databases) > 0 {
+							log.Printf("MONGODB DEBUG: Successfully extracted databases: %v", dbResult.Databases)
+							bestResult.Databases = dbResult.Databases
+							bestResult.Vulnerable = true
+							// Update product banner to include vulnerability status
+							if !strings.Contains(bestResult.Product, "[VULNERABLE]") {
+								bestResult.Product += " [VULNERABLE]"
+							}
+						} else {
+							log.Printf("MONGODB DEBUG: No databases extracted")
+						}
+					} else {
+						log.Printf("MONGODB DEBUG: Error in listDatabases response: %s", errorMsg)
+					}
+				} else {
+					log.Printf("MONGODB DEBUG: Invalid MongoDB response for listDatabases")
 				}
 			}
+		} else {
+			log.Printf("MONGODB DEBUG: Failed to create listDatabases query")
+		}
+	} else {
+		if bestResult == nil {
+			log.Printf("MONGODB DEBUG: No MongoDB detection result")
+		} else {
+			log.Printf("MONGODB DEBUG: Authentication is not disabled (%s), skipping vulnerability test", bestResult.Authentication)
 		}
 	}
 
 	if bestResult != nil {
+		log.Printf("MONGODB DEBUG: Final result: vulnerable=%v, databases=%v", bestResult.Vulnerable, bestResult.Databases)
 		return plugins.CreateServiceFrom(target, *bestResult, false, "", plugins.TCP), nil
 	}
 
