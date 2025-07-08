@@ -850,7 +850,7 @@ type ServicePPTP struct {
 	Product string `json:"product"`
 }
 
-func (e ServiceWinbox) Type() string { return ProtoWinbox }
+func (e ServiceWinbox) Type() string { return ProtoWINBOX }
 
 type ServiceWinbox struct {
 	Info    string `json:"info"`
