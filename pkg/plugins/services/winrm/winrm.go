@@ -17,9 +17,7 @@ package winrm
 import (
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -127,8 +125,6 @@ func createNTLMType1Request(host string) string {
 
 	ntlmType1B64 := base64.StdEncoding.EncodeToString(ntlmType1)
 
-	log.Printf("WINRM DEBUG: Sending NTLM Type 1 message: %s", ntlmType1B64)
-
 	return fmt.Sprintf(`GET /wsman HTTP/1.1
 Host: %s
 Authorization: NTLM %s
@@ -146,53 +142,33 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 		Vulnerable: false,
 	}
 
-	log.Printf("WINRM DEBUG: Analyzing NTLM response")
-
 	// Look for NTLM Type 2 message in WWW-Authenticate header
 	ntlmRegex := regexp.MustCompile(`WWW-Authenticate:\s*NTLM\s+([A-Za-z0-9+/=]+)`)
 	matches := ntlmRegex.FindStringSubmatch(response)
 	if len(matches) < 2 {
-		log.Printf("WINRM DEBUG: No NTLM Type 2 message found in response")
 		return result
 	}
-
-	log.Printf("WINRM DEBUG: Found NTLM Type 2 message: %s", matches[1])
 
 	// Decode base64 NTLM message
 	ntlmData, err := base64.StdEncoding.DecodeString(matches[1])
-	if err != nil {
-		log.Printf("WINRM DEBUG: Failed to decode NTLM message: %v", err)
-		return result
-	}
-
-	log.Printf("WINRM DEBUG: NTLM Type 2 length: %d", len(ntlmData))
-	log.Printf("WINRM DEBUG: NTLM Type 2 hex: %s", hex.EncodeToString(ntlmData))
-
-	if len(ntlmData) < 32 {
-		log.Printf("WINRM DEBUG: NTLM message too short")
+	if err != nil || len(ntlmData) < 32 {
 		return result
 	}
 
 	// Parse NTLM Type 2 message structure
 	if len(ntlmData) >= 8 && string(ntlmData[0:8]) == "NTLMSSP\x00" {
 		messageType := binary.LittleEndian.Uint32(ntlmData[8:12])
-		log.Printf("WINRM DEBUG: NTLM message type: %d", messageType)
 
 		if messageType == 2 { // Type 2 message
-			log.Printf("WINRM DEBUG: Processing NTLM Type 2 message")
-
 			// Extract target name (domain/computer name)
 			if len(ntlmData) >= 20 {
 				targetNameLen := binary.LittleEndian.Uint16(ntlmData[12:14])
 				targetNameOffset := binary.LittleEndian.Uint32(ntlmData[16:20])
 
-				log.Printf("WINRM DEBUG: Target name length: %d, offset: %d", targetNameLen, targetNameOffset)
-
 				if targetNameOffset < uint32(len(ntlmData)) && targetNameLen > 0 {
 					endOffset := targetNameOffset + uint32(targetNameLen)
 					if endOffset <= uint32(len(ntlmData)) {
 						targetName := utf16ToString(ntlmData[targetNameOffset:endOffset])
-						log.Printf("WINRM DEBUG: Target name: %s", targetName)
 						if targetName != "" {
 							result.ComputerName = targetName
 							result.Domain = targetName
@@ -201,14 +177,12 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 				}
 			}
 
-			// Extract flags
+			// Extract flags and check for version info
 			if len(ntlmData) >= 24 {
 				flags := binary.LittleEndian.Uint32(ntlmData[20:24])
-				log.Printf("WINRM DEBUG: NTLM flags: 0x%08x", flags)
 
 				// Check if version info is present
 				if flags&0x02000000 != 0 { // NTLMSSP_NEGOTIATE_VERSION
-					log.Printf("WINRM DEBUG: Version information is present in NTLM message")
 					result = extractNTLMVersion(ntlmData, result)
 				}
 			}
@@ -218,13 +192,10 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 				targetInfoLen := binary.LittleEndian.Uint16(ntlmData[40:42])
 				targetInfoOffset := binary.LittleEndian.Uint32(ntlmData[44:48])
 
-				log.Printf("WINRM DEBUG: Target info length: %d, offset: %d", targetInfoLen, targetInfoOffset)
-
 				if targetInfoOffset < uint32(len(ntlmData)) && targetInfoLen > 0 {
 					endOffset := targetInfoOffset + uint32(targetInfoLen)
 					if endOffset <= uint32(len(ntlmData)) {
 						targetInfo := ntlmData[targetInfoOffset:endOffset]
-						log.Printf("WINRM DEBUG: Target info hex: %s", hex.EncodeToString(targetInfo))
 						result = parseTargetInfo(targetInfo, result)
 					}
 				}
@@ -243,8 +214,6 @@ func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.Se
 		minorVersion := ntlmData[49]
 		buildNumber := binary.LittleEndian.Uint16(ntlmData[50:52])
 
-		log.Printf("WINRM DEBUG: NTLM Version - Major: %d, Minor: %d, Build: %d", majorVersion, minorVersion, buildNumber)
-
 		// Build OS version string
 		versionStr := fmt.Sprintf("%d.%d.%d", majorVersion, minorVersion, buildNumber)
 		result.OSBuild = versionStr
@@ -252,7 +221,6 @@ func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.Se
 		// Look up known Windows versions
 		if osName, exists := windowsVersionMap[versionStr]; exists {
 			result.OSVersion = osName
-			log.Printf("WINRM DEBUG: Mapped OS version: %s", osName)
 		} else {
 			// Generic version based on major.minor
 			if majorVersion == 10 && minorVersion == 0 {
@@ -274,7 +242,6 @@ func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.Se
 			} else {
 				result.OSVersion = fmt.Sprintf("Windows %d.%d", majorVersion, minorVersion)
 			}
-			log.Printf("WINRM DEBUG: Determined OS version: %s", result.OSVersion)
 		}
 
 		// Extract release version for Windows 10/Server 2016+
@@ -290,10 +257,6 @@ func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.Se
 			} else if buildNumber == 20348 {
 				result.OSRelease = "21H2"
 			}
-
-			if result.OSRelease != "" {
-				log.Printf("WINRM DEBUG: Determined OS release: %s", result.OSRelease)
-			}
 		}
 	}
 
@@ -302,8 +265,6 @@ func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.Se
 
 // parseTargetInfo extracts detailed OS and system information from NTLM target info
 func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.ServiceWinRM {
-	log.Printf("WINRM DEBUG: Parsing target info (%d bytes)", len(targetInfo))
-
 	offset := 0
 
 	for offset+4 <= len(targetInfo) {
@@ -311,18 +272,14 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		avLen := binary.LittleEndian.Uint16(targetInfo[offset+2 : offset+4])
 		offset += 4
 
-		log.Printf("WINRM DEBUG: AV pair - ID: %d, Length: %d", avId, avLen)
-
 		if avLen == 0 {
 			if avId == 0 { // End of list
-				log.Printf("WINRM DEBUG: End of AV pairs")
 				break
 			}
 			continue
 		}
 
 		if offset+int(avLen) > len(targetInfo) {
-			log.Printf("WINRM DEBUG: AV pair extends beyond target info")
 			break
 		}
 
@@ -331,34 +288,27 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		switch avId {
 		case 1: // MsvAvNbComputerName - NetBIOS computer name
 			result.NetBIOSName = utf16ToString(value)
-			log.Printf("WINRM DEBUG: NetBIOS computer name: %s", result.NetBIOSName)
 			if result.ComputerName == "" {
 				result.ComputerName = result.NetBIOSName
 			}
 		case 2: // MsvAvNbDomainName - NetBIOS domain name
 			result.NetBIOSDomain = utf16ToString(value)
-			log.Printf("WINRM DEBUG: NetBIOS domain name: %s", result.NetBIOSDomain)
 			if result.Domain == "" {
 				result.Domain = result.NetBIOSDomain
 			}
 		case 3: // MsvAvDnsComputerName - DNS computer name
 			result.DNSName = utf16ToString(value)
-			log.Printf("WINRM DEBUG: DNS computer name: %s", result.DNSName)
 		case 4: // MsvAvDnsDomainName - DNS domain name
 			result.DNSDomain = utf16ToString(value)
-			log.Printf("WINRM DEBUG: DNS domain name: %s", result.DNSDomain)
 		case 5: // MsvAvDnsTreeName - DNS tree name
 			result.TreeName = utf16ToString(value)
-			log.Printf("WINRM DEBUG: DNS tree name: %s", result.TreeName)
 		case 7: // MsvAvTimestamp - Timestamp
 			if len(value) >= 8 {
 				timestamp := binary.LittleEndian.Uint64(value)
 				result.ServerTime = formatNTLMTimestamp(timestamp)
-				log.Printf("WINRM DEBUG: Server timestamp: %s", result.ServerTime)
 			}
 		case 9: // MsvAvTargetName - Target name
 			targetName := utf16ToString(value)
-			log.Printf("WINRM DEBUG: Target name: %s", targetName)
 			if targetName != "" && result.ComputerName == "" {
 				result.ComputerName = targetName
 			}
@@ -374,7 +324,6 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 	// Build FQDN if we have DNS name and domain
 	if result.DNSName != "" && result.DNSDomain != "" {
 		result.FQDN = fmt.Sprintf("%s.%s", result.DNSName, result.DNSDomain)
-		log.Printf("WINRM DEBUG: Built FQDN: %s", result.FQDN)
 	}
 
 	// Determine server type from computer name patterns
@@ -385,32 +334,25 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 
 // determineServerType determines server type from available information
 func determineServerType(result plugins.ServiceWinRM) plugins.ServiceWinRM {
-	log.Printf("WINRM DEBUG: Determining server type")
-
 	// Analyze computer name patterns
 	computerName := strings.ToUpper(result.ComputerName)
-	log.Printf("WINRM DEBUG: Computer name (upper): %s", computerName)
 
 	// Common Windows Server naming patterns
 	if strings.Contains(computerName, "WIN-") {
 		result.ServerType = "Windows Server"
-		log.Printf("WINRM DEBUG: Detected Windows Server from WIN- prefix")
 	}
 
 	// Analyze domain patterns
 	domain := strings.ToUpper(result.Domain)
-	log.Printf("WINRM DEBUG: Domain (upper): %s", domain)
 	if strings.Contains(domain, "WORKGROUP") {
 		if result.ServerType == "" {
 			result.ServerType = "Windows Workstation"
-			log.Printf("WINRM DEBUG: Detected Windows Workstation from WORKGROUP")
 		}
 	}
 
 	// Try to determine architecture (assume x64 for modern systems)
 	if result.Architecture == "" {
 		result.Architecture = "x64"
-		log.Printf("WINRM DEBUG: Assumed x64 architecture")
 	}
 
 	return result
@@ -465,7 +407,6 @@ func parseWinRMResponse(response string) plugins.ServiceWinRM {
 		if matches := serverRegex.FindStringSubmatch(response); len(matches) > 1 {
 			result.Version = matches[1]
 			result.Product = fmt.Sprintf("winrm (Microsoft-HTTPAPI/%s)", matches[1])
-			log.Printf("WINRM DEBUG: Found Microsoft-HTTPAPI version: %s", matches[1])
 		}
 	}
 
@@ -477,18 +418,14 @@ func parseWinRMResponse(response string) plugins.ServiceWinRM {
 	// Check for authentication methods
 	authMethods := []string{}
 	if strings.Contains(response, "WWW-Authenticate:") {
-		log.Printf("WINRM DEBUG: Found WWW-Authenticate header")
 		if strings.Contains(response, "NTLM") {
 			authMethods = append(authMethods, "NTLM")
-			log.Printf("WINRM DEBUG: NTLM authentication supported")
 		}
 		if strings.Contains(response, "Negotiate") {
 			authMethods = append(authMethods, "Negotiate")
-			log.Printf("WINRM DEBUG: Negotiate authentication supported")
 		}
 		if strings.Contains(response, "Basic") {
 			authMethods = append(authMethods, "Basic")
-			log.Printf("WINRM DEBUG: Basic authentication supported")
 		}
 	}
 	result.AuthMethods = authMethods
@@ -508,7 +445,6 @@ func isWinRMResponse(response string) bool {
 
 	for _, indicator := range indicators {
 		if strings.Contains(response, indicator) {
-			log.Printf("WINRM DEBUG: Found WinRM indicator: %s", indicator)
 			return true
 		}
 	}
@@ -520,19 +456,16 @@ func isWinRMResponse(response string) bool {
 func tryAuthTriggerRequests(conn net.Conn, host string, timeout time.Duration) (string, bool) {
 	requests := createAuthTriggerRequests(host)
 
-	for i, request := range requests {
-		log.Printf("WINRM DEBUG: Trying auth trigger request %d", i+1)
+	for _, request := range requests {
 		response, err := utils.SendRecv(conn, []byte(request), timeout)
 		if err == nil && len(response) > 0 {
 			responseStr := string(response)
 			if strings.Contains(responseStr, "WWW-Authenticate") && strings.Contains(responseStr, "NTLM") {
-				log.Printf("WINRM DEBUG: Auth trigger request %d succeeded - found NTLM", i+1)
 				return responseStr, true
 			}
 		}
 	}
 
-	log.Printf("WINRM DEBUG: No auth trigger requests succeeded")
 	return "", false
 }
 
@@ -559,8 +492,6 @@ func (p *WinRMPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.T
 		host = fmt.Sprintf("%s:%d", target.Host, port)
 	}
 
-	log.Printf("WINRM DEBUG: Starting WinRM detection on %s", host)
-
 	// First, try basic detection
 	basicRequest := fmt.Sprintf(`GET /wsman HTTP/1.1
 Host: %s
@@ -571,20 +502,15 @@ Connection: close
 
 	response, err := utils.SendRecv(conn, []byte(basicRequest), timeout)
 	if err != nil {
-		log.Printf("WINRM DEBUG: Basic request failed: %v", err)
 		return nil, nil
 	}
 
 	responseStr := string(response)
-	log.Printf("WINRM DEBUG: Basic response length: %d", len(responseStr))
 
 	// Check if this looks like WinRM
 	if !isWinRMResponse(responseStr) {
-		log.Printf("WINRM DEBUG: Response does not look like WinRM")
 		return nil, nil
 	}
-
-	log.Printf("WINRM DEBUG: Confirmed WinRM service")
 
 	// Parse basic response
 	result := parseWinRMResponse(responseStr)
@@ -592,20 +518,16 @@ Connection: close
 	// Try to trigger NTLM authentication with various requests
 	authResponse, hasAuth := tryAuthTriggerRequests(conn, host, timeout)
 	if hasAuth {
-		log.Printf("WINRM DEBUG: Successfully triggered NTLM authentication")
-
 		// Now send NTLM Type 1 to get detailed OS info
 		ntlmRequest := createNTLMType1Request(host)
 		ntlmResponse, err := utils.SendRecv(conn, []byte(ntlmRequest), timeout)
 		if err == nil {
 			ntlmResponseStr := string(ntlmResponse)
-			log.Printf("WINRM DEBUG: NTLM response length: %d", len(ntlmResponseStr))
 			ntlmInfo := parseNTLMType2Response(ntlmResponseStr)
 
 			// Merge NTLM information
 			if ntlmInfo.ComputerName != "" {
 				result.ComputerName = ntlmInfo.ComputerName
-				log.Printf("WINRM DEBUG: Set computer name: %s", result.ComputerName)
 			}
 			if ntlmInfo.Domain != "" {
 				result.Domain = ntlmInfo.Domain
@@ -643,8 +565,6 @@ Connection: close
 			if ntlmInfo.ServerTime != "" {
 				result.ServerTime = ntlmInfo.ServerTime
 			}
-		} else {
-			log.Printf("WINRM DEBUG: NTLM Type 1 request failed: %v", err)
 		}
 
 		// Also parse auth methods from the trigger response
@@ -652,8 +572,6 @@ Connection: close
 		if len(triggerResult.AuthMethods) > 0 {
 			result.AuthMethods = triggerResult.AuthMethods
 		}
-	} else {
-		log.Printf("WINRM DEBUG: Could not trigger NTLM authentication")
 	}
 
 	// Set protocol based on port
@@ -671,11 +589,7 @@ Connection: close
 		productParts = append(productParts, fmt.Sprintf("(Microsoft-HTTPAPI/%s)", result.Version))
 	}
 	if result.OSVersion != "" {
-		if result.OSRelease != "" {
-			productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
-		} else {
-			productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
-		}
+		productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
 	}
 	if result.OSBuild != "" {
 		productParts = append(productParts, fmt.Sprintf("[%s]", result.OSBuild))
@@ -691,9 +605,6 @@ Connection: close
 	}
 
 	result.Product = strings.Join(productParts, " ")
-
-	log.Printf("WINRM DEBUG: Final result - Product: %s", result.Product)
-	log.Printf("WINRM DEBUG: Computer: %s, Domain: %s, OS: %s, Build: %s", result.ComputerName, result.Domain, result.OSVersion, result.OSBuild)
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
 }
