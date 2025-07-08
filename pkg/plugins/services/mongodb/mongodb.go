@@ -48,136 +48,151 @@ func getPortFromConnection(conn net.Conn) uint16 {
 	return 0
 }
 
-// createMongoDBHeader creates a MongoDB wire protocol header
-func createMongoDBHeader(messageLength, requestID, responseTo, opCode int32) []byte {
-	header := make([]byte, 16)
-	binary.LittleEndian.PutUint32(header[0:4], uint32(messageLength))
-	binary.LittleEndian.PutUint32(header[4:8], uint32(requestID))
-	binary.LittleEndian.PutUint32(header[8:12], uint32(responseTo))
-	binary.LittleEndian.PutUint32(header[12:16], uint32(opCode))
-	return header
+// createBSONElement creates a BSON element with proper encoding
+func createBSONElement(elementType byte, name string, value []byte) []byte {
+	var element []byte
+	element = append(element, elementType)
+	element = append(element, []byte(name)...)
+	element = append(element, 0x00) // null terminator for name
+	element = append(element, value...)
+	return element
 }
 
-// createBSONDocument creates a simple BSON document for MongoDB commands
-func createBSONDocument(command string, value interface{}) []byte {
-	// Simple BSON document creation for basic commands
-	// This is a minimal implementation for detection purposes
+// createBSONInt32 creates a BSON int32 element
+func createBSONInt32(name string, value int32) []byte {
+	valueBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(valueBytes, uint32(value))
+	return createBSONElement(0x10, name, valueBytes)
+}
 
-	var doc []byte
+// createBSONString creates a BSON string element
+func createBSONString(name, value string) []byte {
+	// String length (including null terminator)
+	strLen := len(value) + 1
+	lenBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lenBytes, uint32(strLen))
 
-	if command == "hello" || command == "isMaster" {
-		// Create BSON document: {hello: 1} or {isMaster: 1}
-		doc = []byte{
-			0x16, 0x00, 0x00, 0x00, // document length (22 bytes)
-			0x10, // int32 type
-		}
-		doc = append(doc, []byte(command)...)
-		doc = append(doc, 0x00)                              // null terminator
-		doc = append(doc, []byte{0x01, 0x00, 0x00, 0x00}...) // value: 1
-		doc = append(doc, 0x00)                              // document terminator
-	} else if command == "buildInfo" {
-		// Create BSON document: {buildInfo: 1}
-		doc = []byte{
-			0x15, 0x00, 0x00, 0x00, // document length (21 bytes)
-			0x10, // int32 type
-		}
-		doc = append(doc, []byte(command)...)
-		doc = append(doc, 0x00)                              // null terminator
-		doc = append(doc, []byte{0x01, 0x00, 0x00, 0x00}...) // value: 1
-		doc = append(doc, 0x00)                              // document terminator
+	var valueBytes []byte
+	valueBytes = append(valueBytes, lenBytes...)
+	valueBytes = append(valueBytes, []byte(value)...)
+	valueBytes = append(valueBytes, 0x00) // null terminator
+
+	return createBSONElement(0x02, name, valueBytes)
+}
+
+// createBSONDocument creates a proper BSON document
+func createBSONDocument(elements [][]byte) []byte {
+	// Calculate elements size
+	var elementsData []byte
+	for _, element := range elements {
+		elementsData = append(elementsData, element...)
 	}
+
+	// Document length = 4 bytes (length) + elements + 1 byte (terminator)
+	docLength := 4 + len(elementsData) + 1
+
+	// Create document
+	var doc []byte
+	lengthBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(lengthBytes, uint32(docLength))
+	doc = append(doc, lengthBytes...)
+	doc = append(doc, elementsData...)
+	doc = append(doc, 0x00) // document terminator
 
 	return doc
 }
 
-// createMongoDBCommand creates a complete MongoDB command message
-func createMongoDBCommand(command string, requestID int32) []byte {
+// createMongoDBQuery creates a MongoDB OP_QUERY message
+func createMongoDBQuery(command string, requestID int32) []byte {
+	var elements [][]byte
+
+	// Add main command
+	if command == "hello" {
+		elements = append(elements, createBSONInt32("hello", 1))
+	} else if command == "isMaster" {
+		elements = append(elements, createBSONInt32("isMaster", 1))
+	} else if command == "buildInfo" {
+		elements = append(elements, createBSONInt32("buildInfo", 1))
+	} else {
+		return nil
+	}
+
+	// Add client information for better compatibility
+	elements = append(elements, createBSONString("client", "fingerprintx"))
+
 	// Create BSON document
-	bsonDoc := createBSONDocument(command, 1)
-	if len(bsonDoc) == 0 {
-		return nil
-	}
-
-	// OP_MSG format (opcode 2013)
-	// Header + flagBits + sections
-	flagBits := make([]byte, 4) // no flags set
-
-	// Section 0 (body section)
-	sectionKind := []byte{0x00} // kind 0 = body
-	section := append(sectionKind, bsonDoc...)
-
-	// Calculate total message length
-	messageLength := 16 + 4 + len(section) // header + flagBits + section
-
-	// Create header
-	header := createMongoDBHeader(int32(messageLength), requestID, 0, 2013) // OP_MSG
-
-	// Combine all parts
-	message := append(header, flagBits...)
-	message = append(message, section...)
-
-	return message
-}
-
-// createLegacyQuery creates a legacy OP_QUERY message for hello/isMaster
-func createLegacyQuery(command string, requestID int32) []byte {
-	// OP_QUERY format (opcode 2004) - still supported for hello/isMaster
-	bsonDoc := createBSONDocument(command, 1)
-	if len(bsonDoc) == 0 {
-		return nil
-	}
+	bsonDoc := createBSONDocument(elements)
 
 	// OP_QUERY structure:
-	// header + flags + fullCollectionName + numberToSkip + numberToReturn + query
-	flags := make([]byte, 4)                       // no flags
-	fullCollectionName := []byte("admin.$cmd\x00") // admin database, $cmd collection
-	numberToSkip := make([]byte, 4)                // 0
-	numberToReturn := make([]byte, 4)              // -1 (all)
-	binary.LittleEndian.PutUint32(numberToReturn, 0xFFFFFFFF)
+	// header(16) + flags(4) + collection(variable) + skip(4) + limit(4) + query(variable)
+
+	flags := make([]byte, 4)               // no flags
+	collection := []byte("admin.$cmd\x00") // admin.$cmd collection
+	skip := make([]byte, 4)                // skip 0
+	limit := make([]byte, 4)               // limit 1
+	binary.LittleEndian.PutUint32(limit, 1)
 
 	// Calculate message length
-	messageLength := 16 + 4 + len(fullCollectionName) + 4 + 4 + len(bsonDoc)
+	messageLength := 16 + 4 + len(collection) + 4 + 4 + len(bsonDoc)
 
 	// Create header
-	header := createMongoDBHeader(int32(messageLength), requestID, 0, 2004) // OP_QUERY
+	header := make([]byte, 16)
+	binary.LittleEndian.PutUint32(header[0:4], uint32(messageLength)) // message length
+	binary.LittleEndian.PutUint32(header[4:8], uint32(requestID))     // request ID
+	binary.LittleEndian.PutUint32(header[8:12], 0)                    // response to
+	binary.LittleEndian.PutUint32(header[12:16], 2004)                // OP_QUERY opcode
 
-	// Combine all parts
-	message := append(header, flags...)
-	message = append(message, fullCollectionName...)
-	message = append(message, numberToSkip...)
-	message = append(message, numberToReturn...)
+	// Combine message
+	var message []byte
+	message = append(message, header...)
+	message = append(message, flags...)
+	message = append(message, collection...)
+	message = append(message, skip...)
+	message = append(message, limit...)
 	message = append(message, bsonDoc...)
 
 	return message
 }
 
-// isValidMongoDBResponse checks if response is a valid MongoDB response
+// isValidMongoDBResponse validates MongoDB response
 func isValidMongoDBResponse(response []byte) bool {
-	if len(response) < 16 {
+	if len(response) < 36 { // Minimum OP_REPLY size
 		return false
 	}
 
-	// Check message header
+	// Parse header
 	messageLength := binary.LittleEndian.Uint32(response[0:4])
-	if messageLength < 16 || messageLength > 48*1024*1024 { // MongoDB max message size
-		return false
-	}
-
-	if int(messageLength) != len(response) {
-		return false
-	}
-
-	// Check opcode (should be OP_REPLY=1 or OP_MSG=2013)
 	opCode := binary.LittleEndian.Uint32(response[12:16])
-	if opCode != 1 && opCode != 2013 {
+
+	// Validate message length
+	if messageLength < 36 || messageLength > 48*1024*1024 {
 		return false
 	}
 
-	// Look for MongoDB-specific indicators in the response
+	// Check opcode (OP_REPLY = 1)
+	if opCode != 1 {
+		return false
+	}
+
+	// Parse OP_REPLY structure
+	responseFlags := binary.LittleEndian.Uint32(response[16:20])
+	numberReturned := binary.LittleEndian.Uint32(response[32:36])
+
+	// Check for query failure
+	if responseFlags&0x02 != 0 {
+		return false
+	}
+
+	// Should have at least one document
+	if numberReturned == 0 {
+		return false
+	}
+
+	// Look for MongoDB-specific content
 	responseStr := strings.ToLower(string(response))
 	mongoIndicators := []string{
-		"mongodb", "mongo", "ismaster", "hello", "version",
-		"buildinfo", "gitversion", "maxbsonobjectsize",
+		"ismaster", "hello", "version", "mongodb", "buildinfo",
+		"maxbsonobjectsize", "gitversion", "allocator",
 	}
 
 	for _, indicator := range mongoIndicators {
@@ -189,119 +204,212 @@ func isValidMongoDBResponse(response []byte) bool {
 	return false
 }
 
-// parseMongoDBResponse extracts information from MongoDB response
+// extractBSONString extracts string value from BSON response
+func extractBSONString(data []byte, key string) string {
+	keyPattern := fmt.Sprintf(`%s\x00.{4}([^\x00]+)\x00`, regexp.QuoteMeta(key))
+	re := regexp.MustCompile(keyPattern)
+	if matches := re.Find(data); matches != nil {
+		// Extract string value (skip key name, null terminator, and 4-byte length)
+		start := len(key) + 1 + 4
+		if start < len(matches) {
+			end := start
+			for end < len(matches) && matches[end] != 0x00 {
+				end++
+			}
+			if end > start {
+				return string(matches[start:end])
+			}
+		}
+	}
+	return ""
+}
+
+// extractBSONArray extracts array values from BSON response
+func extractBSONArray(data []byte, key string) []string {
+	var values []string
+
+	// Look for array pattern: key + null + type(0x04) + array_data
+	keyBytes := append([]byte(key), 0x00)
+	keyIndex := strings.Index(string(data), string(keyBytes))
+	if keyIndex == -1 {
+		return values
+	}
+
+	// Simple extraction of string values from array
+	arrayStart := keyIndex + len(keyBytes) + 5 // skip type and length
+	if arrayStart >= len(data) {
+		return values
+	}
+
+	// Extract quoted strings from array
+	arrayData := string(data[arrayStart:])
+	re := regexp.MustCompile(`"([^"]+)"`)
+	matches := re.FindAllStringSubmatch(arrayData, -1)
+	for _, match := range matches {
+		if len(match) > 1 {
+			values = append(values, match[1])
+		}
+	}
+
+	return values
+}
+
+// parseMongoDBResponse extracts detailed information from MongoDB response
 func parseMongoDBResponse(response []byte, command string) (map[string]any, string) {
 	info := make(map[string]any)
-	responseStr := string(response)
 
-	info["Response_Length"] = fmt.Sprintf("%d", len(response))
+	info["Response_Length"] = len(response)
 	info["Command_Used"] = command
 
+	// Skip OP_REPLY header (36 bytes) to get to BSON document
+	if len(response) < 36 {
+		return info, "mongodb"
+	}
+
+	bsonData := response[36:]
+	responseStr := string(response)
+
 	// Extract version information
-	versionPatterns := []string{
-		`"version"\s*:\s*"([^"]+)"`,
-		`version["\s]*[:=]\s*["\s]*([0-9]+\.[0-9]+\.[0-9]+[^"\s]*)`,
-		`gitVersion["\s]*[:=]\s*["\s]*([^"\s,}]+)`,
-	}
-
-	var version string
-	for _, pattern := range versionPatterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
-		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			version = strings.Trim(matches[1], `"`)
-			break
+	version := extractBSONString(bsonData, "version")
+	if version == "" {
+		// Try alternative patterns
+		versionPatterns := []string{
+			`version["\x00\s]*[:\x00]\s*["\x00]*([0-9]+\.[0-9]+\.[0-9]+[^"\x00\s]*)`,
+			`"version":\s*"([^"]+)"`,
+		}
+		for _, pattern := range versionPatterns {
+			re := regexp.MustCompile(pattern)
+			if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
+				version = matches[1]
+				break
+			}
 		}
 	}
 
-	// Extract server type (mongod/mongos)
-	serverTypePatterns := []string{
-		`"msg"\s*:\s*"([^"]*mongod[^"]*)"`,
-		`"msg"\s*:\s*"([^"]*mongos[^"]*)"`,
-		`"process"\s*:\s*"([^"]+)"`,
-	}
-
-	var serverType string
-	for _, pattern := range serverTypePatterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
+	// Extract git version
+	gitVersion := extractBSONString(bsonData, "gitVersion")
+	if gitVersion == "" {
+		re := regexp.MustCompile(`gitVersion["\x00\s]*[:\x00]\s*["\x00]*([a-f0-9]{8,}[^"\x00\s]*)`)
 		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			serverType = matches[1]
-			break
+			gitVersion = matches[1]
 		}
 	}
 
-	// Extract build information
-	buildPatterns := []string{
-		`"buildEnvironment"\s*:\s*{[^}]*"target_arch"\s*:\s*"([^"]+)"`,
-		`"buildEnvironment"\s*:\s*{[^}]*"target_os"\s*:\s*"([^"]+)"`,
-		`"allocator"\s*:\s*"([^"]+)"`,
-	}
-
-	var buildInfo []string
-	for _, pattern := range buildPatterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
+	// Extract allocator
+	allocator := extractBSONString(bsonData, "allocator")
+	if allocator == "" {
+		re := regexp.MustCompile(`allocator["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s]+)`)
 		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			buildInfo = append(buildInfo, matches[1])
+			allocator = matches[1]
 		}
 	}
 
-	// Extract replica set information
-	replicaSetPatterns := []string{
-		`"setName"\s*:\s*"([^"]+)"`,
-		`"ismaster"\s*:\s*(true|false)`,
-		`"secondary"\s*:\s*(true|false)`,
-	}
-
-	var replicaInfo []string
-	for _, pattern := range replicaSetPatterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
+	// Extract JavaScript engine
+	jsEngine := extractBSONString(bsonData, "javascriptEngine")
+	if jsEngine == "" {
+		re := regexp.MustCompile(`javascriptEngine["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s]+)`)
 		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			replicaInfo = append(replicaInfo, matches[1])
+			jsEngine = matches[1]
 		}
 	}
+
+	// Extract build environment
+	targetArch := extractBSONString(bsonData, "target_arch")
+	targetOS := extractBSONString(bsonData, "target_os")
+	distArch := extractBSONString(bsonData, "distarch")
+
+	// Extract storage engines
+	storageEngines := extractBSONArray(bsonData, "storageEngines")
+
+	// Extract OpenSSL version
+	opensslCompiled := extractBSONString(bsonData, "compiled")
+	opensslRunning := extractBSONString(bsonData, "running")
 
 	// Extract max BSON object size
-	maxBSONPattern := `"maxBsonObjectSize"\s*:\s*([0-9]+)`
-	re := regexp.MustCompile(`(?i)` + maxBSONPattern)
+	var maxBSONSize string
+	re := regexp.MustCompile(`maxBsonObjectSize["\x00\s]*[:\x00]\s*([0-9]+)`)
 	if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-		info["Max_BSON_Size"] = matches[1]
+		maxBSONSize = matches[1]
+	}
+
+	// Extract server type and role
+	var serverType, serverRole string
+	if strings.Contains(responseStr, "mongos") {
+		serverType = "mongos"
+	} else {
+		serverType = "mongod"
+	}
+
+	if strings.Contains(responseStr, `"ismaster":true`) || strings.Contains(responseStr, `"isWritablePrimary":true`) {
+		serverRole = "primary"
+	} else if strings.Contains(responseStr, `"secondary":true`) {
+		serverRole = "secondary"
 	}
 
 	// Store extracted information
 	if version != "" {
 		info["MongoDB_Version"] = version
 	}
+	if gitVersion != "" {
+		info["Git_Version"] = gitVersion
+	}
+	if allocator != "" {
+		info["Allocator"] = allocator
+	}
+	if jsEngine != "" {
+		info["JavaScript_Engine"] = jsEngine
+	}
+	if targetArch != "" || targetOS != "" || distArch != "" {
+		var buildEnv []string
+		if distArch != "" {
+			buildEnv = append(buildEnv, "arch:"+distArch)
+		} else if targetArch != "" {
+			buildEnv = append(buildEnv, "arch:"+targetArch)
+		}
+		if targetOS != "" {
+			buildEnv = append(buildEnv, "os:"+targetOS)
+		}
+		if len(buildEnv) > 0 {
+			info["Build_Environment"] = strings.Join(buildEnv, "; ")
+		}
+	}
+	if len(storageEngines) > 0 {
+		info["Storage_Engines"] = strings.Join(storageEngines, ", ")
+	}
+	if opensslCompiled != "" || opensslRunning != "" {
+		if opensslRunning != "" {
+			info["OpenSSL"] = opensslRunning
+		} else {
+			info["OpenSSL"] = opensslCompiled
+		}
+	}
+	if maxBSONSize != "" {
+		info["Max_BSON_Size"] = maxBSONSize
+	}
 	if serverType != "" {
 		info["Server_Type"] = serverType
 	}
-	if len(buildInfo) > 0 {
-		info["Build_Info"] = strings.Join(buildInfo, "; ")
-	}
-	if len(replicaInfo) > 0 {
-		info["Replica_Set"] = strings.Join(replicaInfo, "; ")
+	if serverRole != "" {
+		info["Server_Role"] = serverRole
 	}
 
-	// Check for specific MongoDB features
-	if strings.Contains(responseStr, "ismaster") {
-		info["Feature"] = "Master/Slave Replication"
-	}
-	if strings.Contains(responseStr, "setName") {
-		info["Feature"] = "Replica Set"
-	}
-	if strings.Contains(responseStr, "mongos") {
-		info["Feature"] = "Sharded Cluster"
-	}
-
-	// Create product banner
+	// Create comprehensive product banner
 	productBanner := "mongodb"
 	if version != "" {
 		productBanner = fmt.Sprintf("mongodb %s", version)
 	}
 	if serverType != "" {
-		if strings.Contains(strings.ToLower(serverType), "mongod") {
-			productBanner += " (mongod)"
-		} else if strings.Contains(strings.ToLower(serverType), "mongos") {
-			productBanner += " (mongos)"
+		productBanner += fmt.Sprintf(" (%s)", serverType)
+	}
+	if allocator != "" {
+		productBanner += fmt.Sprintf(" [%s]", allocator)
+	}
+	if targetArch != "" || distArch != "" {
+		arch := distArch
+		if arch == "" {
+			arch = targetArch
 		}
+		productBanner += fmt.Sprintf(" (%s)", arch)
 	}
 
 	return info, productBanner
@@ -328,38 +436,22 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 	// Try different MongoDB commands
 	commands := []string{"hello", "isMaster", "buildInfo"}
 
-	for _, command := range commands {
-		// Try modern OP_MSG format first
-		requestID := int32(1)
-		message := createMongoDBCommand(command, requestID)
-		if message != nil {
-			response, err := utils.SendRecv(conn, message, timeout)
-			if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
-				infoMap, productBanner := parseMongoDBResponse(response, command)
-				mongoInfo := fmt.Sprintf("%s", infoMap)
-				payload := plugins.ServiceMongoDB{
-					Info:    mongoInfo,
-					Product: productBanner,
-				}
-				return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
-			}
+	for i, command := range commands {
+		requestID := int32(i + 1)
+		message := createMongoDBQuery(command, requestID)
+		if message == nil {
+			continue
 		}
 
-		// Try legacy OP_QUERY format for hello/isMaster
-		if command == "hello" || command == "isMaster" {
-			legacyMessage := createLegacyQuery(command, requestID)
-			if legacyMessage != nil {
-				response, err := utils.SendRecv(conn, legacyMessage, timeout)
-				if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
-					infoMap, productBanner := parseMongoDBResponse(response, command+"_legacy")
-					mongoInfo := fmt.Sprintf("%s", infoMap)
-					payload := plugins.ServiceMongoDB{
-						Info:    mongoInfo,
-						Product: productBanner,
-					}
-					return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
-				}
+		response, err := utils.SendRecv(conn, message, timeout)
+		if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
+			infoMap, productBanner := parseMongoDBResponse(response, command)
+			mongoInfo := fmt.Sprintf("%s", infoMap)
+			payload := plugins.ServiceMongoDB{
+				Info:    mongoInfo,
+				Product: productBanner,
 			}
+			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 		}
 	}
 
