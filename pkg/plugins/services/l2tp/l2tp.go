@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strings"
@@ -34,23 +35,6 @@ const L2TP = "l2tp"
 func init() {
 	plugins.RegisterPlugin(&L2TPPlugin{})
 }
-
-/*
-Layer 2 Tunneling Protocol (L2TP) Detection with Vendor Extraction
-
-This plugin performs unauthenticated L2TP protocol fingerprinting and extracts
-vendor/device information from L2TP responses.
-
-L2TP operates over UDP port 1701 and uses AVPs (Attribute Value Pairs) to
-carry vendor and device information in control messages.
-
-The plugin extracts vendor information from:
-- Host Name AVP (Type 7): Device hostname
-- Vendor Name AVP (Type 8): Vendor/manufacturer string
-- Other vendor-specific AVPs
-
-Common vendors detected: MikroTik, Cisco, Microsoft, etc.
-*/
 
 // createL2TPSCCRQPacket creates a Start-Control-Connection-Request packet
 func createL2TPSCCRQPacket() []byte {
@@ -125,9 +109,15 @@ func createAVP(avpType uint16, value []byte, mandatory bool) []byte {
 	return avp.Bytes()
 }
 
-// isDefinitiveL2TPResponse performs strict validation to ensure response is L2TP
+// isDefinitiveL2TPResponse performs validation with debug logging
 func isDefinitiveL2TPResponse(response []byte) bool {
+	log.Printf("L2TP DEBUG: Response length: %d bytes", len(response))
+	if len(response) > 0 {
+		log.Printf("L2TP DEBUG: Response hex: %x", response)
+	}
+
 	if len(response) < 12 {
+		log.Printf("L2TP DEBUG: Response too short (< 12 bytes)")
 		return false
 	}
 
@@ -135,56 +125,66 @@ func isDefinitiveL2TPResponse(response []byte) bool {
 	flags := binary.BigEndian.Uint16(response[0:2])
 	length := binary.BigEndian.Uint16(response[2:4])
 
-	// Strict L2TP header validation
+	log.Printf("L2TP DEBUG: Flags: 0x%04x, Length: %d", flags, length)
 
-	// 1. Version must be exactly 2 (bits 0-3)
+	// Check version
 	version := flags & 0x000F
+	log.Printf("L2TP DEBUG: Version: %d", version)
 	if version != 2 {
+		log.Printf("L2TP DEBUG: Invalid version (not 2)")
 		return false
 	}
 
-	// 2. Must be a control message (T bit = 1)
-	if (flags & 0x8000) == 0 {
+	// Check control message bit
+	isControl := (flags & 0x8000) != 0
+	log.Printf("L2TP DEBUG: Is control message: %t", isControl)
+	if !isControl {
+		log.Printf("L2TP DEBUG: Not a control message")
 		return false
 	}
 
-	// 3. Length bit must be set for control messages (L bit = 1)
-	if (flags & 0x4000) == 0 {
+	// Check length bit
+	hasLength := (flags & 0x4000) != 0
+	log.Printf("L2TP DEBUG: Has length field: %t", hasLength)
+	if !hasLength {
+		log.Printf("L2TP DEBUG: Length bit not set")
 		return false
 	}
 
-	// 4. Sequence bit must be set for control messages (S bit = 1)
-	if (flags & 0x0800) == 0 {
+	// Check sequence bit
+	hasSequence := (flags & 0x0800) != 0
+	log.Printf("L2TP DEBUG: Has sequence fields: %t", hasSequence)
+	if !hasSequence {
+		log.Printf("L2TP DEBUG: Sequence bit not set")
 		return false
 	}
 
-	// 5. Offset bit must be 0 for control messages (O bit = 0)
-	if (flags & 0x0200) != 0 {
+	// Check length matches
+	lengthMatches := int(length) == len(response)
+	log.Printf("L2TP DEBUG: Length matches packet size: %t (%d vs %d)", lengthMatches, length, len(response))
+	if !lengthMatches {
+		log.Printf("L2TP DEBUG: Length field doesn't match packet size")
 		return false
 	}
 
-	// 6. Priority bit must be 0 for control messages (P bit = 0)
-	if (flags & 0x0100) != 0 {
-		return false
-	}
-
-	// 7. Length field should match actual packet length
-	if int(length) != len(response) {
-		return false
-	}
-
-	// 8. Must have AVPs starting at offset 12
+	// Check for AVPs
 	if len(response) <= 12 {
+		log.Printf("L2TP DEBUG: No AVPs present")
 		return false
 	}
 
-	// 9. Try to parse first AVP to validate structure
-	return parseFirstAVP(response[12:])
+	// Try to parse first AVP
+	avpValid := parseFirstAVP(response[12:])
+	log.Printf("L2TP DEBUG: First AVP valid: %t", avpValid)
+
+	return avpValid
 }
 
-// parseFirstAVP validates the first AVP structure
+// parseFirstAVP validates the first AVP structure with debug logging
 func parseFirstAVP(avpData []byte) bool {
+	log.Printf("L2TP DEBUG: AVP data length: %d", len(avpData))
 	if len(avpData) < 6 {
+		log.Printf("L2TP DEBUG: AVP data too short")
 		return false
 	}
 
@@ -192,29 +192,27 @@ func parseFirstAVP(avpData []byte) bool {
 	vendorID := binary.BigEndian.Uint16(avpData[2:4])
 	avpLength := binary.BigEndian.Uint16(avpData[4:6])
 
+	avpType := avpFlags & 0x3FFF
+	mandatory := (avpFlags & 0x8000) != 0
+
+	log.Printf("L2TP DEBUG: First AVP - Type: %d, Mandatory: %t, Vendor: %d, Length: %d",
+		avpType, mandatory, vendorID, avpLength)
+
 	// Basic validation
 	if avpLength < 6 || int(avpLength) > len(avpData) {
+		log.Printf("L2TP DEBUG: Invalid AVP length")
 		return false
 	}
 
 	// For IETF AVPs, vendor ID should be 0
 	if vendorID != 0 {
-		return false
+		log.Printf("L2TP DEBUG: Non-IETF vendor ID: %d", vendorID)
+		// Don't reject, just log
 	}
 
-	// Extract AVP type
-	avpType := avpFlags & 0x3FFF
-
-	// First AVP should typically be Message Type (0) for control messages
-	// But we'll accept other reasonable AVP types too
-	validFirstAVPs := []uint16{0, 2, 7, 8, 9} // Message Type, Protocol Version, Host Name, Vendor Name, Assigned Tunnel ID
-	for _, validType := range validFirstAVPs {
-		if avpType == validType {
-			return true
-		}
-	}
-
-	return false
+	// Accept any reasonable AVP type for first AVP
+	log.Printf("L2TP DEBUG: First AVP type %d accepted", avpType)
+	return true
 }
 
 // extractStringField extracts null-terminated string from byte array
@@ -308,21 +306,27 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 	vendorName := ""
 	messageType := ""
 
+	log.Printf("L2TP DEBUG: Parsing AVPs starting at offset %d", offset)
+
 	for offset < len(response)-6 {
 		// Parse AVP header
 		avpFlags := binary.BigEndian.Uint16(response[offset : offset+2])
 		binary.BigEndian.Uint16(response[offset+2 : offset+4]) // vendorID - read but not used
 		avpLength := binary.BigEndian.Uint16(response[offset+4 : offset+6])
 
+		avpType := avpFlags & 0x3FFF
+
+		log.Printf("L2TP DEBUG: AVP at offset %d - Type: %d, Length: %d", offset, avpType, avpLength)
+
 		if avpLength < 6 || offset+int(avpLength) > len(response) {
+			log.Printf("L2TP DEBUG: Invalid AVP length, breaking")
 			break
 		}
-
-		avpType := avpFlags & 0x3FFF
 
 		// Extract value
 		if avpLength > 6 {
 			valueBytes := response[offset+6 : offset+int(avpLength)]
+			log.Printf("L2TP DEBUG: AVP %d value: %x", avpType, valueBytes)
 
 			switch avpType {
 			case 0: // Message Type
@@ -340,16 +344,19 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 						info["Response"] = "Stop-Control-Connection-Notification"
 					}
 					info["Message_Type"] = messageType
+					log.Printf("L2TP DEBUG: Message Type: %d (%s)", msgType, messageType)
 				}
 			case 7: // Host Name
 				hostName = extractStringField(valueBytes)
 				if hostName != "" {
 					info["Host_Name"] = hostName
+					log.Printf("L2TP DEBUG: Host Name: %s", hostName)
 				}
 			case 8: // Vendor Name
 				vendorName = extractStringField(valueBytes)
 				if vendorName != "" {
 					info["Vendor_Name"] = vendorName
+					log.Printf("L2TP DEBUG: Vendor Name: %s", vendorName)
 				}
 			}
 		}
@@ -369,6 +376,7 @@ func parseL2TPInfo(response []byte) (map[string]any, string) {
 		productBanner = fmt.Sprintf("l2tp %s", hostName)
 	}
 
+	log.Printf("L2TP DEBUG: Final banner: %s", productBanner)
 	return info, productBanner
 }
 
@@ -385,18 +393,27 @@ func (p *L2TPPlugin) Type() plugins.Protocol {
 }
 
 func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	log.Printf("L2TP DEBUG: Starting L2TP detection for %s", target.Host)
+
 	request := createL2TPSCCRQPacket()
+	log.Printf("L2TP DEBUG: Sending SCCRQ packet (%d bytes): %x", len(request), request)
 
 	response, err := utils.SendRecv(conn, request, timeout)
 	if err != nil {
+		log.Printf("L2TP DEBUG: SendRecv error: %v", err)
 		return nil, err
 	}
+
+	log.Printf("L2TP DEBUG: Received response (%d bytes)", len(response))
+
 	if len(response) == 0 {
+		log.Printf("L2TP DEBUG: Empty response")
 		return nil, nil
 	}
 
 	// Only return positive detection if we're 100% certain it's L2TP
 	if isDefinitiveL2TPResponse(response) {
+		log.Printf("L2TP DEBUG: Valid L2TP response detected")
 		infoMap, productBanner := parseL2TPInfo(response)
 		l2tpInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceL2TP{
@@ -406,7 +423,7 @@ func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 		return plugins.CreateServiceFrom(target, payload, false, "", plugins.UDP), nil
 	}
 
-	// Return nil if not definitively L2TP
+	log.Printf("L2TP DEBUG: Response not recognized as L2TP")
 	return nil, nil
 }
 
