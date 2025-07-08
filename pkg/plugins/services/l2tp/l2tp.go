@@ -15,8 +15,8 @@
 package l2tp
 
 import (
-	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -36,130 +36,16 @@ func init() {
 	plugins.RegisterPlugin(&L2TPPlugin{})
 }
 
-// createL2TPSCCRQPacket creates a Start-Control-Connection-Request packet
-func createL2TPSCCRQPacket() []byte {
-	var packet bytes.Buffer
-
-	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
-	binary.Write(&packet, binary.BigEndian, flags)
-
-	lengthPos := packet.Len()
-	binary.Write(&packet, binary.BigEndian, uint16(0))
-
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Tunnel ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Session ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Ns
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Nr
-
-	// Message Type AVP (Type 0, Value 1 for SCCRQ)
-	avp := createAVP(0, []byte{0x00, 0x01}, true)
-	packet.Write(avp)
-
-	// Protocol Version AVP (Type 2, Value 0x0100)
-	avp = createAVP(2, []byte{0x01, 0x00}, true)
-	packet.Write(avp)
-
-	// Host Name AVP (Type 7)
-	hostname := "probe"
-	avp = createAVP(7, []byte(hostname), true)
-	packet.Write(avp)
-
-	// Assigned Tunnel ID AVP (Type 9, Value 1)
-	avp = createAVP(9, []byte{0x00, 0x01}, true)
-	packet.Write(avp)
-
-	totalLength := packet.Len()
-	packetBytes := packet.Bytes()
-	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
-
-	return packetBytes
-}
-
-// createL2TPICRQPacket creates an Incoming-Call-Request packet (like Nmap uses)
-func createL2TPICRQPacket() []byte {
-	var packet bytes.Buffer
-
-	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
-	binary.Write(&packet, binary.BigEndian, flags)
-
-	lengthPos := packet.Len()
-	binary.Write(&packet, binary.BigEndian, uint16(0))
-
-	binary.Write(&packet, binary.BigEndian, uint16(1)) // Tunnel ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Session ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Ns
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Nr
-
-	// Message Type AVP (Type 0, Value 9 for ICRQ)
-	avp := createAVP(0, []byte{0x00, 0x09}, true)
-	packet.Write(avp)
-
-	// Assigned Session ID AVP (Type 14, Value 1)
-	avp = createAVP(14, []byte{0x00, 0x01}, true)
-	packet.Write(avp)
-
-	// Call Serial Number AVP (Type 15, Value 1)
-	avp = createAVP(15, []byte{0x00, 0x00, 0x00, 0x01}, true)
-	packet.Write(avp)
-
-	totalLength := packet.Len()
-	packetBytes := packet.Bytes()
-	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
-
-	return packetBytes
-}
-
-// createL2TPOCRQPacket creates an Outgoing-Call-Request packet
-func createL2TPOCRQPacket() []byte {
-	var packet bytes.Buffer
-
-	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
-	binary.Write(&packet, binary.BigEndian, flags)
-
-	lengthPos := packet.Len()
-	binary.Write(&packet, binary.BigEndian, uint16(0))
-
-	binary.Write(&packet, binary.BigEndian, uint16(1)) // Tunnel ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Session ID
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Ns
-	binary.Write(&packet, binary.BigEndian, uint16(0)) // Nr
-
-	// Message Type AVP (Type 0, Value 7 for OCRQ)
-	avp := createAVP(0, []byte{0x00, 0x07}, true)
-	packet.Write(avp)
-
-	// Assigned Session ID AVP (Type 14, Value 1)
-	avp = createAVP(14, []byte{0x00, 0x01}, true)
-	packet.Write(avp)
-
-	// Call Serial Number AVP (Type 15, Value 1)
-	avp = createAVP(15, []byte{0x00, 0x00, 0x00, 0x01}, true)
-	packet.Write(avp)
-
-	totalLength := packet.Len()
-	packetBytes := packet.Bytes()
-	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
-
-	return packetBytes
-}
-
-// createAVP creates an Attribute Value Pair
-func createAVP(avpType uint16, value []byte, mandatory bool) []byte {
-	var avp bytes.Buffer
-
-	flags := avpType
-	if mandatory {
-		flags |= 0x8000
+// createNmapL2TPICRQPacket creates the exact L2TP_ICRQ packet that Nmap uses
+func createNmapL2TPICRQPacket() []byte {
+	// This is the exact payload from nmap-payloads for L2TP_ICRQ
+	hexStr := "c802003c000000000000000080080000000000018008000000020100800e000000076e78702d7363616e800a00000003000000038008000000090000"
+	payload, err := hex.DecodeString(hexStr)
+	if err != nil {
+		log.Printf("L2TP DEBUG: Error decoding Nmap payload: %v", err)
+		return nil
 	}
-
-	length := uint16(6 + len(value))
-
-	binary.Write(&avp, binary.BigEndian, flags)
-	binary.Write(&avp, binary.BigEndian, uint16(0)) // Vendor ID
-	binary.Write(&avp, binary.BigEndian, length)
-	avp.Write(value)
-
-	return avp.Bytes()
+	return payload
 }
 
 // isL2TPResponse checks if response looks like L2TP
@@ -197,22 +83,6 @@ func isL2TPResponse(response []byte) bool {
 	return false
 }
 
-// extractStringField extracts null-terminated string from byte array
-func extractStringField(data []byte) string {
-	nullIndex := bytes.IndexByte(data, 0)
-	if nullIndex == -1 {
-		nullIndex = len(data)
-	}
-
-	str := string(data[:nullIndex])
-	str = strings.TrimSpace(str)
-
-	re := regexp.MustCompile(`[^\x20-\x7E]`)
-	str = re.ReplaceAllString(str, "")
-
-	return str
-}
-
 // parseL2TPResponse analyzes L2TP response and extracts information
 func parseL2TPResponse(response []byte) (map[string]any, string) {
 	info := make(map[string]any)
@@ -222,6 +92,8 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 	// Look for L2TP headers and extract information
 	headerCount := 0
 	messageTypes := make(map[string]int)
+	hostName := ""
+	vendorName := ""
 
 	for i := 0; i <= len(response)-12; i++ {
 		flags := binary.BigEndian.Uint16(response[i : i+2])
@@ -277,6 +149,12 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 						default:
 							messageTypes[fmt.Sprintf("Type_%d", msgType)]++
 						}
+					} else if avpType == 7 && avpLength > 6 { // Host Name
+						nameBytes := response[avpOffset+6 : avpOffset+int(avpLength)]
+						hostName = strings.TrimRight(string(nameBytes), "\x00")
+					} else if avpType == 8 && avpLength > 6 { // Vendor Name
+						nameBytes := response[avpOffset+6 : avpOffset+int(avpLength)]
+						vendorName = strings.TrimRight(string(nameBytes), "\x00")
 					}
 
 					avpOffset += int(avpLength)
@@ -302,11 +180,27 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 		str := strings.TrimSpace(string(match))
 		if len(str) > 3 {
 			textStrings = append(textStrings, str)
+			// Check for vendor indicators
+			lowerStr := strings.ToLower(str)
+			if strings.Contains(lowerStr, "mikrotik") {
+				vendorName = "MikroTik"
+			} else if strings.Contains(lowerStr, "cisco") {
+				vendorName = "Cisco"
+			} else if strings.Contains(lowerStr, "microsoft") {
+				vendorName = "Microsoft"
+			}
 		}
 	}
 
 	if len(textStrings) > 0 {
 		info["Text_Content"] = strings.Join(textStrings, "; ")
+	}
+
+	if hostName != "" {
+		info["Host_Name"] = hostName
+	}
+	if vendorName != "" {
+		info["Vendor_Name"] = vendorName
 	}
 
 	// Create banner
@@ -316,12 +210,14 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 	responseStr := strings.ToLower(string(response))
 	if strings.Contains(responseStr, "specify") && strings.Contains(responseStr, "tunnel") {
 		productBanner = "l2tp server (tunnel_id_required)"
-	} else if strings.Contains(responseStr, "mikrotik") {
+	} else if vendorName == "MikroTik" {
 		productBanner = "l2tp MikroTik RouterOS"
-	} else if strings.Contains(responseStr, "cisco") {
+	} else if vendorName == "Cisco" {
 		productBanner = "l2tp Cisco"
-	} else if strings.Contains(responseStr, "microsoft") {
+	} else if vendorName == "Microsoft" {
 		productBanner = "l2tp Microsoft"
+	} else if vendorName != "" {
+		productBanner = fmt.Sprintf("l2tp %s", vendorName)
 	} else if len(messageTypes) > 0 {
 		// Create banner based on message types seen
 		var msgList []string
@@ -332,37 +228,6 @@ func parseL2TPResponse(response []byte) (map[string]any, string) {
 	}
 
 	return info, productBanner
-}
-
-// tryL2TPProbes attempts various L2TP probe methods
-func tryL2TPProbes(conn net.Conn, timeout time.Duration) []byte {
-	probes := []struct {
-		name string
-		data []byte
-	}{
-		{"SCCRQ", createL2TPSCCRQPacket()},
-		{"ICRQ", createL2TPICRQPacket()}, // This is what Nmap uses
-		{"OCRQ", createL2TPOCRQPacket()},
-	}
-
-	for _, probe := range probes {
-		log.Printf("L2TP DEBUG: Trying %s probe (%d bytes): %x", probe.name, len(probe.data), probe.data)
-
-		response, err := utils.SendRecv(conn, probe.data, timeout)
-		if err != nil {
-			log.Printf("L2TP DEBUG: %s probe error: %v", probe.name, err)
-			continue
-		}
-
-		log.Printf("L2TP DEBUG: %s probe response (%d bytes)", probe.name, len(response))
-		if len(response) > 0 {
-			log.Printf("L2TP DEBUG: %s response hex: %x", probe.name, response)
-			log.Printf("L2TP DEBUG: %s response ascii: %q", probe.name, response)
-			return response
-		}
-	}
-
-	return nil
 }
 
 func (p *L2TPPlugin) PortPriority(port uint16) bool {
@@ -378,19 +243,37 @@ func (p *L2TPPlugin) Type() plugins.Protocol {
 }
 
 func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	log.Printf("L2TP DEBUG: Starting L2TP detection with ICRQ support for %s", target.Host)
+	log.Printf("L2TP DEBUG: Starting L2TP detection using exact Nmap L2TP_ICRQ payload for %s", target.Host)
 
-	// Try L2TP probes including ICRQ (like Nmap)
-	response := tryL2TPProbes(conn, timeout)
+	// Use the exact same payload that Nmap uses
+	nmapPayload := createNmapL2TPICRQPacket()
+	if nmapPayload == nil {
+		log.Printf("L2TP DEBUG: Failed to create Nmap payload")
+		return nil, nil
+	}
+
+	log.Printf("L2TP DEBUG: Sending Nmap L2TP_ICRQ payload (%d bytes): %x", len(nmapPayload), nmapPayload)
+
+	response, err := utils.SendRecv(conn, nmapPayload, timeout)
+	if err != nil {
+		log.Printf("L2TP DEBUG: Error sending Nmap payload: %v", err)
+		return nil, nil
+	}
+
+	log.Printf("L2TP DEBUG: Nmap payload response (%d bytes)", len(response))
+	if len(response) > 0 {
+		log.Printf("L2TP DEBUG: Response hex: %x", response)
+		log.Printf("L2TP DEBUG: Response ascii: %q", response)
+	}
 
 	if len(response) == 0 {
-		log.Printf("L2TP DEBUG: No response from any probe method")
+		log.Printf("L2TP DEBUG: No response from Nmap L2TP_ICRQ payload")
 		return nil, nil
 	}
 
 	// Check if response looks like L2TP
 	if isL2TPResponse(response) {
-		log.Printf("L2TP DEBUG: L2TP response detected")
+		log.Printf("L2TP DEBUG: L2TP response detected using Nmap payload")
 		infoMap, productBanner := parseL2TPResponse(response)
 		l2tpInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceL2TP{
