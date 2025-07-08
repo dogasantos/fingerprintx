@@ -63,6 +63,7 @@ import (
 	//testados:
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/fgfmsd"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/l2tp"
+	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/mongodb"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/openvpn"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/oracledb"
 	_ "github.com/dogasantos/fingerprintx/pkg/plugins/services/pptp"
