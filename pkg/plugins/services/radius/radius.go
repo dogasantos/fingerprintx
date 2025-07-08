@@ -67,14 +67,80 @@ func init() {
 	plugins.RegisterPlugin(&RADIUSPlugin{})
 }
 
+// isValidRADIUSResponse validates if response is actually RADIUS
+func (p *RADIUSPlugin) isValidRADIUSResponse(response []byte) bool {
+	if len(response) < 20 {
+		return false
+	}
+
+	// Check RADIUS code (must be 1-5 for valid RADIUS responses)
+	code := response[0]
+	if code < 1 || code > 5 {
+		return false
+	}
+
+	// Check packet length consistency
+	packetLength := binary.BigEndian.Uint16(response[2:4])
+	if int(packetLength) != len(response) {
+		return false
+	}
+
+	// Minimum RADIUS packet is 20 bytes (header only)
+	if packetLength < 20 {
+		return false
+	}
+
+	// Maximum reasonable RADIUS packet size
+	if packetLength > 4096 {
+		return false
+	}
+
+	// Validate attributes structure if present
+	if len(response) > 20 {
+		offset := 20
+		for offset < len(response) {
+			if offset+2 > len(response) {
+				return false // Incomplete attribute header
+			}
+
+			attrType := response[offset]
+			attrLen := response[offset+1]
+
+			// Attribute length must be at least 2 (type + length)
+			if attrLen < 2 {
+				return false
+			}
+
+			// Attribute must not extend beyond packet
+			if offset+int(attrLen) > len(response) {
+				return false
+			}
+
+			// Check for valid attribute types (1-255, but some are reserved)
+			if attrType == 0 {
+				return false // Type 0 is invalid
+			}
+
+			offset += int(attrLen)
+		}
+	}
+
+	return true
+}
+
 // Run performs RADIUS detection
 func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
+	// Only run on standard RADIUS ports for conservative detection
+	if !p.PortPriority(target.Port) {
+		return nil, nil
+	}
+
 	startTime := time.Now()
 
 	// Perform RADIUS detection
 	fingerprint, err := p.performRADIUSDetection(conn, timeout)
 	if err != nil {
-		return nil, err
+		return nil, nil // Return nil instead of error for failed detection
 	}
 
 	// If detection failed, this is not RADIUS
@@ -137,8 +203,15 @@ func (p *RADIUSPlugin) performRADIUSDetection(conn net.Conn, timeout time.Durati
 		return nil, fmt.Errorf("failed to read RADIUS response: %w", err)
 	}
 
+	response = response[:n]
+
+	// Strict RADIUS validation - this is the key fix
+	if !p.isValidRADIUSResponse(response) {
+		return nil, fmt.Errorf("response is not valid RADIUS")
+	}
+
 	// Parse RADIUS response
-	fingerprint, err := p.parseRADIUSResponse(response[:n])
+	fingerprint, err := p.parseRADIUSResponse(response)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse RADIUS response: %w", err)
 	}
