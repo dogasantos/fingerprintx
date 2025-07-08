@@ -38,6 +38,22 @@ func init() {
 	plugins.RegisterPlugin(&WinRMPlugin{})
 }
 
+// Windows version mapping based on build numbers
+var windowsVersionMap = map[string]string{
+	"10.0.14393": "Windows Server 2016 (version 1607)",
+	"10.0.17763": "Windows Server 2019 (version 1809)",
+	"10.0.20348": "Windows Server 2022",
+	"10.0.19041": "Windows 10 (version 2004)",
+	"10.0.19042": "Windows 10 (version 20H2)",
+	"10.0.19043": "Windows 10 (version 21H1)",
+	"10.0.19044": "Windows 10 (version 21H2)",
+	"10.0.22000": "Windows 11",
+	"6.3.9600":   "Windows Server 2012 R2",
+	"6.2.9200":   "Windows Server 2012",
+	"6.1.7601":   "Windows Server 2008 R2",
+	"6.0.6002":   "Windows Server 2008",
+}
+
 // getPortFromConnection extracts port number from connection
 func getPortFromConnection(conn net.Conn) uint16 {
 	addr := conn.RemoteAddr().String()
@@ -74,59 +90,8 @@ Connection: close
   </soap:Body>
 </soap:Envelope>`, host),
 
-		// WinRM enumeration request
-		fmt.Sprintf(`POST /wsman HTTP/1.1
-Host: %s
-Content-Type: application/soap+xml;charset=UTF-8
-Content-Length: 800
-User-Agent: Microsoft WinRM Client
-Connection: close
-
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
-  <soap:Header>
-    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</wsa:Action>
-    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
-    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789013</wsa:MessageID>
-    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_OperatingSystem</wsman:ResourceURI>
-  </soap:Header>
-  <soap:Body>
-    <wsen:Enumerate/>
-  </soap:Body>
-</soap:Envelope>`, host),
-
-		// PowerShell remoting request
-		fmt.Sprintf(`POST /wsman HTTP/1.1
-Host: %s
-Content-Type: application/soap+xml;charset=UTF-8
-Content-Length: 600
-User-Agent: Microsoft WinRM Client
-Connection: close
-
-<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
-  <soap:Header>
-    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/action/Create</wsa:Action>
-    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
-    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789014</wsa:MessageID>
-    <wsman:ResourceURI>http://schemas.microsoft.com/powershell/Microsoft.PowerShell</wsman:ResourceURI>
-  </soap:Header>
-  <soap:Body>
-    <rsp:Shell xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell"/>
-  </soap:Body>
-</soap:Envelope>`, host),
-
-		// Simple GET with auth headers that might trigger challenge
+		// Simple GET that might trigger auth
 		fmt.Sprintf(`GET /wsman HTTP/1.1
-Host: %s
-Authorization: Basic dGVzdDp0ZXN0
-User-Agent: Microsoft WinRM Client
-Connection: close
-
-`, host),
-
-		// OPTIONS request
-		fmt.Sprintf(`OPTIONS /wsman HTTP/1.1
 Host: %s
 User-Agent: Microsoft WinRM Client
 Connection: close
@@ -139,12 +104,26 @@ Connection: close
 
 // createNTLMType1Request creates an NTLM Type 1 message request with proper flags
 func createNTLMType1Request(host string) string {
-	// Create a proper NTLM Type 1 message with flags requesting target info
-	ntlmType1 := make([]byte, 32)
-	copy(ntlmType1[0:8], "NTLMSSP\x00")                     // Signature
-	binary.LittleEndian.PutUint32(ntlmType1[8:12], 1)       // Type 1
-	binary.LittleEndian.PutUint32(ntlmType1[12:16], 0xb207) // Flags: Request target info, Unicode, OEM
+	// Create a proper NTLM Type 1 message with flags requesting target info and version
+	ntlmType1 := make([]byte, 40)                               // Extended to include version info
+	copy(ntlmType1[0:8], "NTLMSSP\x00")                         // Signature
+	binary.LittleEndian.PutUint32(ntlmType1[8:12], 1)           // Type 1
+	binary.LittleEndian.PutUint32(ntlmType1[12:16], 0x62088207) // Flags: Request target info, Unicode, OEM, Version
 	// Domain and workstation fields (empty)
+	binary.LittleEndian.PutUint16(ntlmType1[16:18], 0) // Domain length
+	binary.LittleEndian.PutUint16(ntlmType1[18:20], 0) // Domain max length
+	binary.LittleEndian.PutUint32(ntlmType1[20:24], 0) // Domain offset
+	binary.LittleEndian.PutUint16(ntlmType1[24:26], 0) // Workstation length
+	binary.LittleEndian.PutUint16(ntlmType1[26:28], 0) // Workstation max length
+	binary.LittleEndian.PutUint32(ntlmType1[28:32], 0) // Workstation offset
+	// Version info (8 bytes)
+	ntlmType1[32] = 0x06                                  // Major version (Windows Vista/2008+)
+	ntlmType1[33] = 0x01                                  // Minor version
+	binary.LittleEndian.PutUint16(ntlmType1[34:36], 7601) // Build number
+	ntlmType1[36] = 0x00                                  // Reserved
+	ntlmType1[37] = 0x00                                  // Reserved
+	ntlmType1[38] = 0x00                                  // Reserved
+	ntlmType1[39] = 0x0F                                  // NTLM revision
 
 	ntlmType1B64 := base64.StdEncoding.EncodeToString(ntlmType1)
 
@@ -226,6 +205,12 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 			if len(ntlmData) >= 24 {
 				flags := binary.LittleEndian.Uint32(ntlmData[20:24])
 				log.Printf("WINRM DEBUG: NTLM flags: 0x%08x", flags)
+
+				// Check if version info is present
+				if flags&0x02000000 != 0 { // NTLMSSP_NEGOTIATE_VERSION
+					log.Printf("WINRM DEBUG: Version information is present in NTLM message")
+					result = extractNTLMVersion(ntlmData, result)
+				}
 			}
 
 			// Extract target info (if present) - this contains detailed OS information
@@ -243,6 +228,71 @@ func parseNTLMType2Response(response string) plugins.ServiceWinRM {
 						result = parseTargetInfo(targetInfo, result)
 					}
 				}
+			}
+		}
+	}
+
+	return result
+}
+
+// extractNTLMVersion extracts OS version from NTLM version field
+func extractNTLMVersion(ntlmData []byte, result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	// NTLM version info is typically at offset 48-56 in Type 2 message
+	if len(ntlmData) >= 56 {
+		majorVersion := ntlmData[48]
+		minorVersion := ntlmData[49]
+		buildNumber := binary.LittleEndian.Uint16(ntlmData[50:52])
+
+		log.Printf("WINRM DEBUG: NTLM Version - Major: %d, Minor: %d, Build: %d", majorVersion, minorVersion, buildNumber)
+
+		// Build OS version string
+		versionStr := fmt.Sprintf("%d.%d.%d", majorVersion, minorVersion, buildNumber)
+		result.OSBuild = versionStr
+
+		// Look up known Windows versions
+		if osName, exists := windowsVersionMap[versionStr]; exists {
+			result.OSVersion = osName
+			log.Printf("WINRM DEBUG: Mapped OS version: %s", osName)
+		} else {
+			// Generic version based on major.minor
+			if majorVersion == 10 && minorVersion == 0 {
+				if buildNumber >= 20348 {
+					result.OSVersion = "Windows Server 2022"
+				} else if buildNumber >= 17763 {
+					result.OSVersion = "Windows Server 2019"
+				} else if buildNumber >= 14393 {
+					result.OSVersion = "Windows Server 2016"
+				} else {
+					result.OSVersion = "Windows 10"
+				}
+			} else if majorVersion == 6 && minorVersion == 3 {
+				result.OSVersion = "Windows Server 2012 R2"
+			} else if majorVersion == 6 && minorVersion == 2 {
+				result.OSVersion = "Windows Server 2012"
+			} else if majorVersion == 6 && minorVersion == 1 {
+				result.OSVersion = "Windows Server 2008 R2"
+			} else {
+				result.OSVersion = fmt.Sprintf("Windows %d.%d", majorVersion, minorVersion)
+			}
+			log.Printf("WINRM DEBUG: Determined OS version: %s", result.OSVersion)
+		}
+
+		// Extract release version for Windows 10/Server 2016+
+		if majorVersion == 10 && minorVersion == 0 {
+			if buildNumber == 14393 {
+				result.OSRelease = "1607"
+			} else if buildNumber == 17763 {
+				result.OSRelease = "1809"
+			} else if buildNumber == 19041 {
+				result.OSRelease = "2004"
+			} else if buildNumber == 19042 {
+				result.OSRelease = "20H2"
+			} else if buildNumber == 20348 {
+				result.OSRelease = "21H2"
+			}
+
+			if result.OSRelease != "" {
+				log.Printf("WINRM DEBUG: Determined OS release: %s", result.OSRelease)
 			}
 		}
 	}
@@ -297,11 +347,20 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		case 4: // MsvAvDnsDomainName - DNS domain name
 			result.DNSDomain = utf16ToString(value)
 			log.Printf("WINRM DEBUG: DNS domain name: %s", result.DNSDomain)
+		case 5: // MsvAvDnsTreeName - DNS tree name
+			result.TreeName = utf16ToString(value)
+			log.Printf("WINRM DEBUG: DNS tree name: %s", result.TreeName)
 		case 7: // MsvAvTimestamp - Timestamp
 			if len(value) >= 8 {
 				timestamp := binary.LittleEndian.Uint64(value)
 				result.ServerTime = formatNTLMTimestamp(timestamp)
 				log.Printf("WINRM DEBUG: Server timestamp: %s", result.ServerTime)
+			}
+		case 9: // MsvAvTargetName - Target name
+			targetName := utf16ToString(value)
+			log.Printf("WINRM DEBUG: Target name: %s", targetName)
+			if targetName != "" && result.ComputerName == "" {
+				result.ComputerName = targetName
 			}
 		}
 
@@ -318,15 +377,15 @@ func parseTargetInfo(targetInfo []byte, result plugins.ServiceWinRM) plugins.Ser
 		log.Printf("WINRM DEBUG: Built FQDN: %s", result.FQDN)
 	}
 
-	// Determine OS version from computer name and other indicators
-	result = determineOSVersion(result)
+	// Determine server type from computer name patterns
+	result = determineServerType(result)
 
 	return result
 }
 
-// determineOSVersion attempts to determine Windows version from available information
-func determineOSVersion(result plugins.ServiceWinRM) plugins.ServiceWinRM {
-	log.Printf("WINRM DEBUG: Determining OS version")
+// determineServerType determines server type from available information
+func determineServerType(result plugins.ServiceWinRM) plugins.ServiceWinRM {
+	log.Printf("WINRM DEBUG: Determining server type")
 
 	// Analyze computer name patterns
 	computerName := strings.ToUpper(result.ComputerName)
@@ -336,8 +395,15 @@ func determineOSVersion(result plugins.ServiceWinRM) plugins.ServiceWinRM {
 	if strings.Contains(computerName, "WIN-") {
 		result.ServerType = "Windows Server"
 		log.Printf("WINRM DEBUG: Detected Windows Server from WIN- prefix")
-		if result.OSVersion == "" {
-			result.OSVersion = "Windows Server"
+	}
+
+	// Analyze domain patterns
+	domain := strings.ToUpper(result.Domain)
+	log.Printf("WINRM DEBUG: Domain (upper): %s", domain)
+	if strings.Contains(domain, "WORKGROUP") {
+		if result.ServerType == "" {
+			result.ServerType = "Windows Workstation"
+			log.Printf("WINRM DEBUG: Detected Windows Workstation from WORKGROUP")
 		}
 	}
 
@@ -562,6 +628,12 @@ Connection: close
 			if ntlmInfo.OSVersion != "" {
 				result.OSVersion = ntlmInfo.OSVersion
 			}
+			if ntlmInfo.OSBuild != "" {
+				result.OSBuild = ntlmInfo.OSBuild
+			}
+			if ntlmInfo.OSRelease != "" {
+				result.OSRelease = ntlmInfo.OSRelease
+			}
 			if ntlmInfo.ServerType != "" {
 				result.ServerType = ntlmInfo.ServerType
 			}
@@ -599,7 +671,14 @@ Connection: close
 		productParts = append(productParts, fmt.Sprintf("(Microsoft-HTTPAPI/%s)", result.Version))
 	}
 	if result.OSVersion != "" {
-		productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
+		if result.OSRelease != "" {
+			productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
+		} else {
+			productParts = append(productParts, fmt.Sprintf("(%s)", result.OSVersion))
+		}
+	}
+	if result.OSBuild != "" {
+		productParts = append(productParts, fmt.Sprintf("[%s]", result.OSBuild))
 	}
 	if result.ComputerName != "" {
 		productParts = append(productParts, fmt.Sprintf("[%s]", result.ComputerName))
@@ -614,7 +693,7 @@ Connection: close
 	result.Product = strings.Join(productParts, " ")
 
 	log.Printf("WINRM DEBUG: Final result - Product: %s", result.Product)
-	log.Printf("WINRM DEBUG: Computer: %s, Domain: %s, OS: %s", result.ComputerName, result.Domain, result.OSVersion)
+	log.Printf("WINRM DEBUG: Computer: %s, Domain: %s, OS: %s, Build: %s", result.ComputerName, result.Domain, result.OSVersion, result.OSBuild)
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
 }
