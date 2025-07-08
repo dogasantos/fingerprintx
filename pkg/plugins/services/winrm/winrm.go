@@ -100,6 +100,68 @@ Connection: close
 	return requests
 }
 
+// createBasicAuthRequests creates requests with basic authentication using guest/guest
+func createBasicAuthRequests(host string) []string {
+	// Create base64 encoded guest:guest credentials
+	credentials := base64.StdEncoding.EncodeToString([]byte("guest:guest"))
+
+	requests := []string{
+		// SOAP Identify request with basic auth
+		fmt.Sprintf(`POST /wsman HTTP/1.1
+Host: %s
+Content-Type: application/soap+xml;charset=UTF-8
+Content-Length: 574
+Authorization: Basic %s
+User-Agent: Microsoft WinRM Client
+Connection: close
+
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd">
+  <soap:Header>
+    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.dmtf.org/wbem/wsman/1/wsman/Identify</wsa:Action>
+    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
+    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789012</wsa:MessageID>
+  </soap:Header>
+  <soap:Body>
+    <wsmid:Identify/>
+  </soap:Body>
+</soap:Envelope>`, host, credentials),
+
+		// SOAP enumeration request with basic auth
+		fmt.Sprintf(`POST /wsman HTTP/1.1
+Host: %s
+Content-Type: application/soap+xml;charset=UTF-8
+Content-Length: 800
+Authorization: Basic %s
+User-Agent: Microsoft WinRM Client
+Connection: close
+
+<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd">
+  <soap:Header>
+    <wsa:Action xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</wsa:Action>
+    <wsa:To xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:To>
+    <wsa:MessageID xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">uuid:12345678-1234-1234-1234-123456789013</wsa:MessageID>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_OperatingSystem</wsman:ResourceURI>
+  </soap:Header>
+  <soap:Body>
+    <wsen:Enumerate/>
+  </soap:Body>
+</soap:Envelope>`, host, credentials),
+
+		// Simple GET with basic auth
+		fmt.Sprintf(`GET /wsman HTTP/1.1
+Host: %s
+Authorization: Basic %s
+User-Agent: Microsoft WinRM Client
+Connection: close
+
+`, host, credentials),
+	}
+
+	return requests
+}
+
 // createNTLMType1Request creates an NTLM Type 1 message request with proper flags
 func createNTLMType1Request(host string) string {
 	// Create a proper NTLM Type 1 message with flags requesting target info and version
@@ -393,6 +455,51 @@ func utf16ToString(data []byte) string {
 	return string(result)
 }
 
+// parseBasicAuthResponse analyzes response from basic authentication attempt
+func parseBasicAuthResponse(response string) (bool, plugins.ServiceWinRM) {
+	result := plugins.ServiceWinRM{
+		Product:    "winrm",
+		Anonymous:  false,
+		Vulnerable: false,
+	}
+
+	// Check if authentication was successful (not 401 Unauthorized)
+	if strings.Contains(response, "401 Unauthorized") || strings.Contains(response, "403 Forbidden") {
+		return false, result
+	}
+
+	// Check for successful responses (200 OK, or SOAP responses)
+	if strings.Contains(response, "200 OK") || strings.Contains(response, "soap:Envelope") ||
+		strings.Contains(response, "wsmid:IdentifyResponse") {
+
+		// Authentication succeeded with guest/guest - this is vulnerable
+		result.Vulnerable = true
+		result.Anonymous = true // guest account is essentially anonymous
+
+		// Try to extract information from SOAP response
+		if strings.Contains(response, "wsmid:IdentifyResponse") {
+			// Extract ProductVendor
+			if vendorMatch := regexp.MustCompile(`<wsmid:ProductVendor>([^<]+)</wsmid:ProductVendor>`).FindStringSubmatch(response); len(vendorMatch) > 1 {
+				result.ProductVendor = vendorMatch[1]
+			}
+
+			// Extract ProductVersion
+			if versionMatch := regexp.MustCompile(`<wsmid:ProductVersion>([^<]+)</wsmid:ProductVersion>`).FindStringSubmatch(response); len(versionMatch) > 1 {
+				result.ProductVersion = versionMatch[1]
+			}
+
+			// Extract ProtocolVersion
+			if protocolMatch := regexp.MustCompile(`<wsmid:ProtocolVersion>([^<]+)</wsmid:ProtocolVersion>`).FindStringSubmatch(response); len(protocolMatch) > 1 {
+				result.ProtocolVersion = protocolMatch[1]
+			}
+		}
+
+		return true, result
+	}
+
+	return false, result
+}
+
 // parseWinRMResponse analyzes WinRM response and extracts information
 func parseWinRMResponse(response string) plugins.ServiceWinRM {
 	result := plugins.ServiceWinRM{
@@ -469,6 +576,24 @@ func tryAuthTriggerRequests(conn net.Conn, host string, timeout time.Duration) (
 	return "", false
 }
 
+// tryBasicAuthRequests attempts basic authentication with guest/guest credentials
+func tryBasicAuthRequests(conn net.Conn, host string, timeout time.Duration) (bool, plugins.ServiceWinRM) {
+	requests := createBasicAuthRequests(host)
+
+	for _, request := range requests {
+		response, err := utils.SendRecv(conn, []byte(request), timeout)
+		if err == nil && len(response) > 0 {
+			responseStr := string(response)
+			success, result := parseBasicAuthResponse(responseStr)
+			if success {
+				return true, result
+			}
+		}
+	}
+
+	return false, plugins.ServiceWinRM{}
+}
+
 func (p *WinRMPlugin) PortPriority(port uint16) bool {
 	return port == 5985 || port == 5986
 }
@@ -514,6 +639,7 @@ Connection: close
 
 	// Parse basic response
 	result := parseWinRMResponse(responseStr)
+	hasNTLMData := false
 
 	// Try to trigger NTLM authentication with various requests
 	authResponse, hasAuth := tryAuthTriggerRequests(conn, host, timeout)
@@ -525,45 +651,50 @@ Connection: close
 			ntlmResponseStr := string(ntlmResponse)
 			ntlmInfo := parseNTLMType2Response(ntlmResponseStr)
 
-			// Merge NTLM information
-			if ntlmInfo.ComputerName != "" {
-				result.ComputerName = ntlmInfo.ComputerName
-			}
-			if ntlmInfo.Domain != "" {
-				result.Domain = ntlmInfo.Domain
-			}
-			if ntlmInfo.NetBIOSName != "" {
-				result.NetBIOSName = ntlmInfo.NetBIOSName
-			}
-			if ntlmInfo.NetBIOSDomain != "" {
-				result.NetBIOSDomain = ntlmInfo.NetBIOSDomain
-			}
-			if ntlmInfo.DNSName != "" {
-				result.DNSName = ntlmInfo.DNSName
-			}
-			if ntlmInfo.DNSDomain != "" {
-				result.DNSDomain = ntlmInfo.DNSDomain
-			}
-			if ntlmInfo.FQDN != "" {
-				result.FQDN = ntlmInfo.FQDN
-			}
-			if ntlmInfo.OSVersion != "" {
-				result.OSVersion = ntlmInfo.OSVersion
-			}
-			if ntlmInfo.OSBuild != "" {
-				result.OSBuild = ntlmInfo.OSBuild
-			}
-			if ntlmInfo.OSRelease != "" {
-				result.OSRelease = ntlmInfo.OSRelease
-			}
-			if ntlmInfo.ServerType != "" {
-				result.ServerType = ntlmInfo.ServerType
-			}
-			if ntlmInfo.Architecture != "" {
-				result.Architecture = ntlmInfo.Architecture
-			}
-			if ntlmInfo.ServerTime != "" {
-				result.ServerTime = ntlmInfo.ServerTime
+			// Check if we got meaningful NTLM data
+			if ntlmInfo.ComputerName != "" || ntlmInfo.OSVersion != "" || ntlmInfo.Domain != "" {
+				hasNTLMData = true
+
+				// Merge NTLM information
+				if ntlmInfo.ComputerName != "" {
+					result.ComputerName = ntlmInfo.ComputerName
+				}
+				if ntlmInfo.Domain != "" {
+					result.Domain = ntlmInfo.Domain
+				}
+				if ntlmInfo.NetBIOSName != "" {
+					result.NetBIOSName = ntlmInfo.NetBIOSName
+				}
+				if ntlmInfo.NetBIOSDomain != "" {
+					result.NetBIOSDomain = ntlmInfo.NetBIOSDomain
+				}
+				if ntlmInfo.DNSName != "" {
+					result.DNSName = ntlmInfo.DNSName
+				}
+				if ntlmInfo.DNSDomain != "" {
+					result.DNSDomain = ntlmInfo.DNSDomain
+				}
+				if ntlmInfo.FQDN != "" {
+					result.FQDN = ntlmInfo.FQDN
+				}
+				if ntlmInfo.OSVersion != "" {
+					result.OSVersion = ntlmInfo.OSVersion
+				}
+				if ntlmInfo.OSBuild != "" {
+					result.OSBuild = ntlmInfo.OSBuild
+				}
+				if ntlmInfo.OSRelease != "" {
+					result.OSRelease = ntlmInfo.OSRelease
+				}
+				if ntlmInfo.ServerType != "" {
+					result.ServerType = ntlmInfo.ServerType
+				}
+				if ntlmInfo.Architecture != "" {
+					result.Architecture = ntlmInfo.Architecture
+				}
+				if ntlmInfo.ServerTime != "" {
+					result.ServerTime = ntlmInfo.ServerTime
+				}
 			}
 		}
 
@@ -571,6 +702,31 @@ Connection: close
 		triggerResult := parseWinRMResponse(authResponse)
 		if len(triggerResult.AuthMethods) > 0 {
 			result.AuthMethods = triggerResult.AuthMethods
+		}
+	}
+
+	// If no NTLM data was extracted, try basic authentication with guest/guest
+	if !hasNTLMData {
+		basicAuthSuccess, basicAuthResult := tryBasicAuthRequests(conn, host, timeout)
+		if basicAuthSuccess {
+			// Merge basic auth results
+			result.Vulnerable = basicAuthResult.Vulnerable
+			result.Anonymous = basicAuthResult.Anonymous
+
+			if basicAuthResult.ProductVendor != "" {
+				result.ProductVendor = basicAuthResult.ProductVendor
+			}
+			if basicAuthResult.ProductVersion != "" {
+				result.ProductVersion = basicAuthResult.ProductVersion
+			}
+			if basicAuthResult.ProtocolVersion != "" {
+				result.ProtocolVersion = basicAuthResult.ProtocolVersion
+			}
+
+			// Add Basic to auth methods if not already present
+			if !contains(result.AuthMethods, "Basic") {
+				result.AuthMethods = append(result.AuthMethods, "Basic")
+			}
 		}
 	}
 
@@ -607,6 +763,16 @@ Connection: close
 	result.Product = strings.Join(productParts, " ")
 
 	return plugins.CreateServiceFrom(target, result, port == 5986, "", plugins.TCP), nil
+}
+
+// contains checks if a string slice contains a specific string
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *WinRMPlugin) Priority() int {
