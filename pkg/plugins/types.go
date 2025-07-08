@@ -80,6 +80,7 @@ const (
 	ProtoSIP         = "sip"
 	ProtoL2TP        = "l2tp"
 	ProtoPPTP        = "pptp"
+	ProtoWINBOX      = "winbox"
 )
 
 // Used as a key for maps to plugins.
@@ -265,6 +266,10 @@ func (e Service) Metadata() Metadata {
 		return p
 	case ProtoPPTP:
 		var p ServicePPTP
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+	case ProtoWINBOX:
+		var p ServiceWinbox
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
 
@@ -841,6 +846,13 @@ type ServiceL2TP struct {
 func (e ServicePPTP) Type() string { return ProtoPPTP }
 
 type ServicePPTP struct {
+	Info    string `json:"info"`
+	Product string `json:"product"`
+}
+
+func (e ServiceWinbox) Type() string { return ProtoWinbox }
+
+type ServiceWinbox struct {
 	Info    string `json:"info"`
 	Product string `json:"product"`
 }
