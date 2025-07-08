@@ -40,7 +40,6 @@ func init() {
 func createL2TPSCCRQPacket() []byte {
 	var packet bytes.Buffer
 
-	// L2TP Header
 	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
 	binary.Write(&packet, binary.BigEndian, flags)
 
@@ -69,7 +68,6 @@ func createL2TPSCCRQPacket() []byte {
 	avp = createAVP(9, []byte{0x00, 0x01}, true)
 	packet.Write(avp)
 
-	// Update length field
 	totalLength := packet.Len()
 	packetBytes := packet.Bytes()
 	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
@@ -77,55 +75,72 @@ func createL2TPSCCRQPacket() []byte {
 	return packetBytes
 }
 
-// createMalformedL2TPPacket creates various malformed packets to trigger responses
-func createMalformedL2TPPacket(variant int) []byte {
+// createL2TPICRQPacket creates an Incoming-Call-Request packet (like Nmap uses)
+func createL2TPICRQPacket() []byte {
 	var packet bytes.Buffer
 
-	switch variant {
-	case 1: // Wrong version
-		flags := uint16(0xC801) // Version 1 instead of 2
-		binary.Write(&packet, binary.BigEndian, flags)
-		binary.Write(&packet, binary.BigEndian, uint16(12))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
+	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
+	binary.Write(&packet, binary.BigEndian, flags)
 
-	case 2: // Invalid length
-		flags := uint16(0xC802)
-		binary.Write(&packet, binary.BigEndian, flags)
-		binary.Write(&packet, binary.BigEndian, uint16(999)) // Wrong length
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
+	lengthPos := packet.Len()
+	binary.Write(&packet, binary.BigEndian, uint16(0))
 
-	case 3: // Invalid tunnel ID
-		flags := uint16(0xC802)
-		binary.Write(&packet, binary.BigEndian, flags)
-		binary.Write(&packet, binary.BigEndian, uint16(12))
-		binary.Write(&packet, binary.BigEndian, uint16(65535)) // Invalid tunnel ID
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
+	binary.Write(&packet, binary.BigEndian, uint16(1)) // Tunnel ID
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Session ID
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Ns
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Nr
 
-	case 4: // Just L2TP magic bytes
-		packet.Write([]byte{0xC8, 0x02})
+	// Message Type AVP (Type 0, Value 9 for ICRQ)
+	avp := createAVP(0, []byte{0x00, 0x09}, true)
+	packet.Write(avp)
 
-	case 5: // Random data that might trigger response
-		packet.Write([]byte{0x00, 0x01, 0x02, 0x03, 0x04, 0x05})
+	// Assigned Session ID AVP (Type 14, Value 1)
+	avp = createAVP(14, []byte{0x00, 0x01}, true)
+	packet.Write(avp)
 
-	default: // Minimal valid header
-		flags := uint16(0xC802)
-		binary.Write(&packet, binary.BigEndian, flags)
-		binary.Write(&packet, binary.BigEndian, uint16(12))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-		binary.Write(&packet, binary.BigEndian, uint16(0))
-	}
+	// Call Serial Number AVP (Type 15, Value 1)
+	avp = createAVP(15, []byte{0x00, 0x00, 0x00, 0x01}, true)
+	packet.Write(avp)
 
-	return packet.Bytes()
+	totalLength := packet.Len()
+	packetBytes := packet.Bytes()
+	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
+
+	return packetBytes
+}
+
+// createL2TPOCRQPacket creates an Outgoing-Call-Request packet
+func createL2TPOCRQPacket() []byte {
+	var packet bytes.Buffer
+
+	flags := uint16(0xC802) // T=1, L=1, S=1, Ver=2
+	binary.Write(&packet, binary.BigEndian, flags)
+
+	lengthPos := packet.Len()
+	binary.Write(&packet, binary.BigEndian, uint16(0))
+
+	binary.Write(&packet, binary.BigEndian, uint16(1)) // Tunnel ID
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Session ID
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Ns
+	binary.Write(&packet, binary.BigEndian, uint16(0)) // Nr
+
+	// Message Type AVP (Type 0, Value 7 for OCRQ)
+	avp := createAVP(0, []byte{0x00, 0x07}, true)
+	packet.Write(avp)
+
+	// Assigned Session ID AVP (Type 14, Value 1)
+	avp = createAVP(14, []byte{0x00, 0x01}, true)
+	packet.Write(avp)
+
+	// Call Serial Number AVP (Type 15, Value 1)
+	avp = createAVP(15, []byte{0x00, 0x00, 0x00, 0x01}, true)
+	packet.Write(avp)
+
+	totalLength := packet.Len()
+	packetBytes := packet.Bytes()
+	binary.BigEndian.PutUint16(packetBytes[lengthPos:lengthPos+2], uint16(totalLength))
+
+	return packetBytes
 }
 
 // createAVP creates an Attribute Value Pair
@@ -147,33 +162,34 @@ func createAVP(avpType uint16, value []byte, mandatory bool) []byte {
 	return avp.Bytes()
 }
 
-// isAnyL2TPResponse checks if response could be L2TP-related
-func isAnyL2TPResponse(response []byte) bool {
-	if len(response) < 2 {
+// isL2TPResponse checks if response looks like L2TP
+func isL2TPResponse(response []byte) bool {
+	if len(response) < 8 {
 		return false
 	}
 
-	// Check for L2TP-like patterns
-	// Look for version 2 in any position
-	for i := 0; i < len(response)-1; i++ {
+	// Look for L2TP header pattern anywhere in response
+	for i := 0; i <= len(response)-8; i++ {
 		flags := binary.BigEndian.Uint16(response[i : i+2])
 		version := flags & 0x000F
-		if version == 2 {
-			// Check if control bit is set
-			if (flags & 0x8000) != 0 {
-				log.Printf("L2TP DEBUG: Found L2TP-like pattern at offset %d: 0x%04x", i, flags)
-				return true
-			}
+
+		// Check for L2TP version 2 with control bit set
+		if version == 2 && (flags&0x8000) != 0 {
+			log.Printf("L2TP DEBUG: Found L2TP header at offset %d: 0x%04x", i, flags)
+			return true
 		}
 	}
 
-	// Look for common L2TP error patterns or strings
+	// Look for L2TP error messages or strings
 	responseStr := strings.ToLower(string(response))
-	l2tpIndicators := []string{"l2tp", "tunnel", "ppp", "lac", "lns"}
+	l2tpIndicators := []string{
+		"tunnel", "assigned", "specify", "l2tp", "ppp", "lac", "lns",
+		"connection", "session", "call", "bearer", "framing",
+	}
 
 	for _, indicator := range l2tpIndicators {
 		if strings.Contains(responseStr, indicator) {
-			log.Printf("L2TP DEBUG: Found L2TP indicator string: %s", indicator)
+			log.Printf("L2TP DEBUG: Found L2TP indicator: %s", indicator)
 			return true
 		}
 	}
@@ -197,126 +213,136 @@ func extractStringField(data []byte) string {
 	return str
 }
 
-// identifyVendorFromString attempts to identify vendor from strings
-func identifyVendorFromString(hostName, vendorName string) string {
-	combined := strings.ToLower(hostName + " " + vendorName)
-
-	vendors := map[string]string{
-		"mikrotik":   "MikroTik RouterOS",
-		"routeros":   "MikroTik RouterOS",
-		"cisco":      "Cisco",
-		"microsoft":  "Microsoft",
-		"windows":    "Microsoft Windows",
-		"linux":      "Linux L2TP",
-		"strongswan": "strongSwan",
-		"openswan":   "Openswan",
-		"freeswan":   "FreeS/WAN",
-		"xl2tpd":     "xl2tpd",
-		"rp-l2tp":    "Roaring Penguin L2TP",
-		"fortinet":   "Fortinet FortiGate",
-		"fortigate":  "Fortinet FortiGate",
-		"sonicwall":  "SonicWall",
-		"watchguard": "WatchGuard",
-		"zyxel":      "ZyXEL",
-		"draytek":    "DrayTek",
-		"tp-link":    "TP-Link",
-		"netgear":    "Netgear",
-		"linksys":    "Linksys",
-		"asus":       "ASUS",
-		"huawei":     "Huawei",
-		"juniper":    "Juniper Networks",
-		"pfsense":    "pfSense",
-		"opnsense":   "OPNsense",
-		"vyos":       "VyOS",
-		"ubiquiti":   "Ubiquiti",
-		"unifi":      "Ubiquiti UniFi",
-	}
-
-	for keyword, vendor := range vendors {
-		if strings.Contains(combined, keyword) {
-			return vendor
-		}
-	}
-
-	if vendorName != "" {
-		return vendorName
-	}
-
-	return "Unknown"
-}
-
-// parseL2TPInfo extracts information from any L2TP-like response
-func parseL2TPInfo(response []byte) (map[string]any, string) {
+// parseL2TPResponse analyzes L2TP response and extracts information
+func parseL2TPResponse(response []byte) (map[string]any, string) {
 	info := make(map[string]any)
 
 	info["Response_Length"] = fmt.Sprintf("%d", len(response))
-	info["Response_Hex"] = fmt.Sprintf("%x", response)
 
-	// Try to find L2TP header patterns
-	for i := 0; i < len(response)-1; i++ {
+	// Look for L2TP headers and extract information
+	headerCount := 0
+	messageTypes := make(map[string]int)
+
+	for i := 0; i <= len(response)-12; i++ {
 		flags := binary.BigEndian.Uint16(response[i : i+2])
 		version := flags & 0x000F
+
 		if version == 2 && (flags&0x8000) != 0 {
-			info["L2TP_Version"] = "2"
-			info["L2TP_Flags"] = fmt.Sprintf("0x%04x", flags)
-			break
-		}
-	}
+			headerCount++
+			length := binary.BigEndian.Uint16(response[i+2 : i+4])
+			tunnelID := binary.BigEndian.Uint16(response[i+4 : i+6])
+			sessionID := binary.BigEndian.Uint16(response[i+6 : i+8])
 
-	// Look for printable strings that might indicate vendor
-	hostName := ""
-	vendorName := ""
+			log.Printf("L2TP DEBUG: Header %d - Length: %d, Tunnel: %d, Session: %d",
+				headerCount, length, tunnelID, sessionID)
 
-	// Extract any printable strings
-	re := regexp.MustCompile(`[a-zA-Z0-9\-\. ]{4,}`)
-	matches := re.FindAll(response, -1)
-	for _, match := range matches {
-		str := string(match)
-		str = strings.TrimSpace(str)
-		if len(str) > 3 {
-			if strings.Contains(strings.ToLower(str), "mikrotik") {
-				vendorName = "MikroTik"
-			} else if hostName == "" {
-				hostName = str
+			if headerCount == 1 {
+				info["L2TP_Version"] = "2"
+				info["Tunnel_ID"] = fmt.Sprintf("%d", tunnelID)
+				info["Session_ID"] = fmt.Sprintf("%d", sessionID)
+			}
+
+			// Try to parse AVPs
+			if i+12 < len(response) && int(length) > 12 {
+				avpOffset := i + 12
+				endOffset := i + int(length)
+				if endOffset > len(response) {
+					endOffset = len(response)
+				}
+
+				for avpOffset < endOffset-6 {
+					avpFlags := binary.BigEndian.Uint16(response[avpOffset : avpOffset+2])
+					avpLength := binary.BigEndian.Uint16(response[avpOffset+4 : avpOffset+6])
+					avpType := avpFlags & 0x3FFF
+
+					if avpLength < 6 || avpOffset+int(avpLength) > endOffset {
+						break
+					}
+
+					if avpType == 0 && avpLength >= 8 { // Message Type
+						msgType := binary.BigEndian.Uint16(response[avpOffset+6 : avpOffset+8])
+						switch msgType {
+						case 2:
+							messageTypes["SCCRP"]++
+						case 4:
+							messageTypes["StopCCN"]++
+						case 6:
+							messageTypes["HELLO"]++
+						case 9:
+							messageTypes["ICRQ"]++
+						case 10:
+							messageTypes["ICRP"]++
+						case 12:
+							messageTypes["CDN"]++
+						default:
+							messageTypes[fmt.Sprintf("Type_%d", msgType)]++
+						}
+					}
+
+					avpOffset += int(avpLength)
+				}
 			}
 		}
 	}
 
-	if hostName != "" {
-		info["Host_Name"] = hostName
+	if headerCount > 0 {
+		info["L2TP_Headers"] = fmt.Sprintf("%d", headerCount)
 	}
-	if vendorName != "" {
-		info["Vendor_Name"] = vendorName
+
+	for msgType, count := range messageTypes {
+		info[fmt.Sprintf("Message_%s", msgType)] = fmt.Sprintf("%d", count)
+	}
+
+	// Extract any readable text that might indicate vendor/error
+	re := regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9\-\. ]{3,}`)
+	matches := re.FindAll(response, -1)
+
+	var textStrings []string
+	for _, match := range matches {
+		str := strings.TrimSpace(string(match))
+		if len(str) > 3 {
+			textStrings = append(textStrings, str)
+		}
+	}
+
+	if len(textStrings) > 0 {
+		info["Text_Content"] = strings.Join(textStrings, "; ")
 	}
 
 	// Create banner
 	productBanner := "l2tp tunneling_protocol 2"
 
-	vendor := identifyVendorFromString(hostName, vendorName)
-	if vendor != "Unknown" {
-		productBanner = fmt.Sprintf("l2tp %s", vendor)
-	} else if vendorName != "" {
-		productBanner = fmt.Sprintf("l2tp %s", vendorName)
-	} else if hostName != "" {
-		productBanner = fmt.Sprintf("l2tp %s", hostName)
+	// Check for specific error messages or vendor info
+	responseStr := strings.ToLower(string(response))
+	if strings.Contains(responseStr, "specify") && strings.Contains(responseStr, "tunnel") {
+		productBanner = "l2tp server (tunnel_id_required)"
+	} else if strings.Contains(responseStr, "mikrotik") {
+		productBanner = "l2tp MikroTik RouterOS"
+	} else if strings.Contains(responseStr, "cisco") {
+		productBanner = "l2tp Cisco"
+	} else if strings.Contains(responseStr, "microsoft") {
+		productBanner = "l2tp Microsoft"
+	} else if len(messageTypes) > 0 {
+		// Create banner based on message types seen
+		var msgList []string
+		for msgType := range messageTypes {
+			msgList = append(msgList, msgType)
+		}
+		productBanner = fmt.Sprintf("l2tp server (%s)", strings.Join(msgList, ","))
 	}
 
 	return info, productBanner
 }
 
-// tryAllL2TPProbes attempts various probe methods
-func tryAllL2TPProbes(conn net.Conn, timeout time.Duration) []byte {
+// tryL2TPProbes attempts various L2TP probe methods
+func tryL2TPProbes(conn net.Conn, timeout time.Duration) []byte {
 	probes := []struct {
 		name string
 		data []byte
 	}{
 		{"SCCRQ", createL2TPSCCRQPacket()},
-		{"Malformed_V1", createMalformedL2TPPacket(1)},
-		{"Malformed_Len", createMalformedL2TPPacket(2)},
-		{"Malformed_TID", createMalformedL2TPPacket(3)},
-		{"Magic_Bytes", createMalformedL2TPPacket(4)},
-		{"Random_Data", createMalformedL2TPPacket(5)},
-		{"Minimal", createMalformedL2TPPacket(0)},
+		{"ICRQ", createL2TPICRQPacket()}, // This is what Nmap uses
+		{"OCRQ", createL2TPOCRQPacket()},
 	}
 
 	for _, probe := range probes {
@@ -352,20 +378,20 @@ func (p *L2TPPlugin) Type() plugins.Protocol {
 }
 
 func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	log.Printf("L2TP DEBUG: Starting passive L2TP detection for %s", target.Host)
+	log.Printf("L2TP DEBUG: Starting L2TP detection with ICRQ support for %s", target.Host)
 
-	// Try all probe methods including malformed packets
-	response := tryAllL2TPProbes(conn, timeout)
+	// Try L2TP probes including ICRQ (like Nmap)
+	response := tryL2TPProbes(conn, timeout)
 
 	if len(response) == 0 {
 		log.Printf("L2TP DEBUG: No response from any probe method")
 		return nil, nil
 	}
 
-	// Use very permissive validation
-	if isAnyL2TPResponse(response) {
-		log.Printf("L2TP DEBUG: L2TP-like response detected")
-		infoMap, productBanner := parseL2TPInfo(response)
+	// Check if response looks like L2TP
+	if isL2TPResponse(response) {
+		log.Printf("L2TP DEBUG: L2TP response detected")
+		infoMap, productBanner := parseL2TPResponse(response)
 		l2tpInfo := fmt.Sprintf("%s", infoMap)
 		payload := plugins.ServiceL2TP{
 			Info:    l2tpInfo,
@@ -374,7 +400,7 @@ func (p *L2TPPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Ta
 		return plugins.CreateServiceFrom(target, payload, false, "", plugins.UDP), nil
 	}
 
-	log.Printf("L2TP DEBUG: Response not recognized as L2TP-related")
+	log.Printf("L2TP DEBUG: Response not recognized as L2TP")
 	return nil, nil
 }
 
