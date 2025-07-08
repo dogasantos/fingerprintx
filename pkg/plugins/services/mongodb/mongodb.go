@@ -1,17 +1,3 @@
-// Copyright 2022 Praetorian Security, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package mongodb
 
 import (
@@ -34,6 +20,26 @@ const MONGODB = "mongodb"
 func init() {
 	plugins.RegisterPlugin(&MongoDBPlugin{})
 }
+
+// BSON element types
+const (
+	BSONTypeDouble     = 0x01
+	BSONTypeString     = 0x02
+	BSONTypeDocument   = 0x03
+	BSONTypeArray      = 0x04
+	BSONTypeBinary     = 0x05
+	BSONTypeObjectID   = 0x07
+	BSONTypeBoolean    = 0x08
+	BSONTypeDateTime   = 0x09
+	BSONTypeNull       = 0x0A
+	BSONTypeRegex      = 0x0B
+	BSONTypeJavaScript = 0x0D
+	BSONTypeSymbol     = 0x0E
+	BSONTypeInt32      = 0x10
+	BSONTypeTimestamp  = 0x11
+	BSONTypeInt64      = 0x12
+	BSONTypeDecimal128 = 0x13
+)
 
 // getPortFromConnection extracts port number from connection
 func getPortFromConnection(conn net.Conn) uint16 {
@@ -113,6 +119,8 @@ func createMongoDBQuery(command string, requestID int32) []byte {
 		elements = append(elements, createBSONInt32("isMaster", 1))
 	} else if command == "buildInfo" {
 		elements = append(elements, createBSONInt32("buildInfo", 1))
+	} else if command == "listDatabases" {
+		elements = append(elements, createBSONInt32("listDatabases", 1))
 	} else {
 		return nil
 	}
@@ -154,6 +162,209 @@ func createMongoDBQuery(command string, requestID int32) []byte {
 	return message
 }
 
+// parseBSONString parses a BSON string from data at offset
+func parseBSONString(data []byte, offset int) (string, int, error) {
+	if offset+4 >= len(data) {
+		return "", 0, fmt.Errorf("insufficient data for string length")
+	}
+
+	// Read string length (including null terminator)
+	strLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	if strLen == 0 || strLen > 1024*1024 { // Sanity check
+		return "", 0, fmt.Errorf("invalid string length: %d", strLen)
+	}
+
+	offset += 4
+	if offset+int(strLen) > len(data) {
+		return "", 0, fmt.Errorf("insufficient data for string content")
+	}
+
+	// Read string content (excluding null terminator)
+	strValue := string(data[offset : offset+int(strLen)-1])
+
+	return strValue, offset + int(strLen), nil
+}
+
+// parseBSONInt32 parses a BSON int32 from data at offset
+func parseBSONInt32(data []byte, offset int) (int32, int, error) {
+	if offset+4 > len(data) {
+		return 0, 0, fmt.Errorf("insufficient data for int32")
+	}
+
+	value := int32(binary.LittleEndian.Uint32(data[offset : offset+4]))
+	return value, offset + 4, nil
+}
+
+// parseBSONInt64 parses a BSON int64 from data at offset
+func parseBSONInt64(data []byte, offset int) (int64, int, error) {
+	if offset+8 > len(data) {
+		return 0, 0, fmt.Errorf("insufficient data for int64")
+	}
+
+	value := int64(binary.LittleEndian.Uint64(data[offset : offset+8]))
+	return value, offset + 8, nil
+}
+
+// parseBSONBoolean parses a BSON boolean from data at offset
+func parseBSONBoolean(data []byte, offset int) (bool, int, error) {
+	if offset+1 > len(data) {
+		return false, 0, fmt.Errorf("insufficient data for boolean")
+	}
+
+	value := data[offset] != 0
+	return value, offset + 1, nil
+}
+
+// parseBSONArray parses a BSON array from data at offset
+func parseBSONArray(data []byte, offset int) ([]interface{}, int, error) {
+	if offset+4 >= len(data) {
+		return nil, 0, fmt.Errorf("insufficient data for array length")
+	}
+
+	// Read array length
+	arrayLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	if arrayLen < 5 || arrayLen > 1024*1024 { // Sanity check
+		return nil, 0, fmt.Errorf("invalid array length: %d", arrayLen)
+	}
+
+	arrayEnd := offset + int(arrayLen)
+	if arrayEnd > len(data) {
+		return nil, 0, fmt.Errorf("insufficient data for array content")
+	}
+
+	var values []interface{}
+	currentOffset := offset + 4
+
+	// Parse array elements
+	for currentOffset < arrayEnd-1 { // -1 for terminator
+		elementType := data[currentOffset]
+		currentOffset++
+
+		// Read element name (array indices like "0", "1", etc.)
+		nameEnd := currentOffset
+		for nameEnd < arrayEnd && data[nameEnd] != 0 {
+			nameEnd++
+		}
+		if nameEnd >= arrayEnd {
+			break
+		}
+		currentOffset = nameEnd + 1 // Skip null terminator
+
+		// Parse element value based on type
+		var value interface{}
+		var err error
+
+		switch elementType {
+		case BSONTypeString:
+			value, currentOffset, err = parseBSONString(data, currentOffset)
+		case BSONTypeInt32:
+			value, currentOffset, err = parseBSONInt32(data, currentOffset)
+		case BSONTypeInt64:
+			value, currentOffset, err = parseBSONInt64(data, currentOffset)
+		case BSONTypeBoolean:
+			value, currentOffset, err = parseBSONBoolean(data, currentOffset)
+		default:
+			// Skip unknown types
+			break
+		}
+
+		if err != nil {
+			break
+		}
+
+		if value != nil {
+			values = append(values, value)
+		}
+	}
+
+	return values, arrayEnd, nil
+}
+
+// parseBSONDocument parses a BSON document and returns key-value pairs
+func parseBSONDocument(data []byte, offset int) (map[string]interface{}, int, error) {
+	if offset+4 >= len(data) {
+		return nil, 0, fmt.Errorf("insufficient data for document length")
+	}
+
+	// Read document length
+	docLen := binary.LittleEndian.Uint32(data[offset : offset+4])
+	if docLen < 5 || docLen > 16*1024*1024 { // Sanity check
+		return nil, 0, fmt.Errorf("invalid document length: %d", docLen)
+	}
+
+	docEnd := offset + int(docLen)
+	if docEnd > len(data) {
+		return nil, 0, fmt.Errorf("insufficient data for document content")
+	}
+
+	result := make(map[string]interface{})
+	currentOffset := offset + 4
+
+	// Parse document elements
+	for currentOffset < docEnd-1 { // -1 for terminator
+		if currentOffset >= len(data) {
+			break
+		}
+
+		elementType := data[currentOffset]
+		if elementType == 0 { // Document terminator
+			break
+		}
+		currentOffset++
+
+		// Read element name
+		nameStart := currentOffset
+		nameEnd := currentOffset
+		for nameEnd < docEnd && data[nameEnd] != 0 {
+			nameEnd++
+		}
+		if nameEnd >= docEnd {
+			break
+		}
+
+		elementName := string(data[nameStart:nameEnd])
+		currentOffset = nameEnd + 1 // Skip null terminator
+
+		// Parse element value based on type
+		var value interface{}
+		var err error
+
+		switch elementType {
+		case BSONTypeString:
+			value, currentOffset, err = parseBSONString(data, currentOffset)
+		case BSONTypeInt32:
+			value, currentOffset, err = parseBSONInt32(data, currentOffset)
+		case BSONTypeInt64:
+			value, currentOffset, err = parseBSONInt64(data, currentOffset)
+		case BSONTypeBoolean:
+			value, currentOffset, err = parseBSONBoolean(data, currentOffset)
+		case BSONTypeArray:
+			value, currentOffset, err = parseBSONArray(data, currentOffset)
+		case BSONTypeDocument:
+			value, currentOffset, err = parseBSONDocument(data, currentOffset)
+		default:
+			// Skip unknown element types
+			// Try to find next element by looking for next type byte
+			for currentOffset < docEnd && currentOffset < len(data) {
+				if data[currentOffset] >= 0x01 && data[currentOffset] <= 0x13 {
+					break
+				}
+				currentOffset++
+			}
+			continue
+		}
+
+		if err != nil {
+			// Skip this element and try to continue
+			continue
+		}
+
+		result[elementName] = value
+	}
+
+	return result, docEnd, nil
+}
+
 // isValidMongoDBResponse validates MongoDB response
 func isValidMongoDBResponse(response []byte) bool {
 	if len(response) < 36 { // Minimum OP_REPLY size
@@ -188,315 +399,308 @@ func isValidMongoDBResponse(response []byte) bool {
 		return false
 	}
 
-	// Look for MongoDB-specific content
-	responseStr := strings.ToLower(string(response))
-	mongoIndicators := []string{
-		"ismaster", "hello", "version", "mongodb", "buildinfo",
-		"maxbsonobjectsize", "gitversion", "allocator", "javascriptengine",
-	}
-
-	for _, indicator := range mongoIndicators {
-		if strings.Contains(responseStr, indicator) {
-			return true
-		}
-	}
-
-	return false
+	return true
 }
 
-// extractStringValue extracts string value using multiple patterns
-func extractStringValue(data string, key string) string {
-	patterns := []string{
-		fmt.Sprintf(`"%s"\s*:\s*"([^"]+)"`, regexp.QuoteMeta(key)),
-		fmt.Sprintf(`%s["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s,}]+)`, regexp.QuoteMeta(key)),
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(`(?i)` + pattern)
-		if matches := re.FindStringSubmatch(data); len(matches) > 1 {
-			return strings.Trim(matches[1], `"`)
-		}
+// extractGCCVersion extracts GCC version from compiler string
+func extractGCCVersion(compilerStr string) string {
+	re := regexp.MustCompile(`gcc.*?([0-9]+\.[0-9]+\.[0-9]+)`)
+	if matches := re.FindStringSubmatch(compilerStr); len(matches) > 1 {
+		return matches[1]
 	}
 	return ""
 }
 
-// extractArrayValues extracts array values
-func extractArrayValues(data string, key string) []string {
-	var values []string
+// extractDatabaseNames extracts database names from listDatabases response
+func extractDatabaseNames(bsonDoc map[string]interface{}) []string {
+	var databases []string
 
-	// Pattern for JSON array
-	pattern := fmt.Sprintf(`"%s"\s*:\s*\[\s*([^\]]+)\s*\]`, regexp.QuoteMeta(key))
-	re := regexp.MustCompile(pattern)
-	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
-		// Extract quoted strings from array content
-		arrayContent := matches[1]
-		stringRe := regexp.MustCompile(`"([^"]+)"`)
-		stringMatches := stringRe.FindAllStringSubmatch(arrayContent, -1)
-		for _, match := range stringMatches {
-			if len(match) > 1 {
-				values = append(values, match[1])
+	if v, ok := bsonDoc["databases"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			for _, item := range arr {
+				if doc, ok := item.(map[string]interface{}); ok {
+					if name, ok := doc["name"]; ok {
+						if str, ok := name.(string); ok {
+							databases = append(databases, str)
+						}
+					}
+				}
 			}
 		}
 	}
 
-	return values
+	return databases
 }
 
-// extractBuildEnvironment extracts detailed build environment information
-func extractBuildEnvironment(data string) map[string]string {
-	buildEnv := make(map[string]string)
-
-	// Look for buildEnvironment object
-	buildEnvPattern := `"buildEnvironment"\s*:\s*\{([^}]+)\}`
-	re := regexp.MustCompile(buildEnvPattern)
-	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
-		buildContent := matches[1]
-
-		// Extract individual build environment fields
-		fields := []string{
-			"distarch", "cc", "cxx", "cxxflags", "linkflags", "ccflags",
-			"target_arch", "target_os", "distmod",
-		}
-
-		for _, field := range fields {
-			value := extractStringValue(buildContent, field)
-			if value != "" {
-				buildEnv[field] = value
-			}
-		}
+// checkVulnerability checks if MongoDB is vulnerable (auth disabled + can list databases)
+func checkVulnerability(conn net.Conn, timeout time.Duration, authDisabled bool) (bool, []string) {
+	if !authDisabled {
+		return false, nil
 	}
 
-	return buildEnv
+	// Try to list databases
+	requestID := int32(100)
+	message := createMongoDBQuery("listDatabases", requestID)
+	if message == nil {
+		return false, nil
+	}
+
+	response, err := utils.SendRecv(conn, message, timeout)
+	if err != nil || len(response) == 0 || !isValidMongoDBResponse(response) {
+		return false, nil
+	}
+
+	// Parse response
+	bsonDoc, _, err := parseBSONDocument(response, 36)
+	if err != nil {
+		return false, nil
+	}
+
+	// Extract database names
+	databases := extractDatabaseNames(bsonDoc)
+	if len(databases) > 0 {
+		return true, databases // Vulnerable: can list databases without auth
+	}
+
+	return false, nil
 }
 
-// extractOpenSSLInfo extracts OpenSSL information
-func extractOpenSSLInfo(data string) map[string]string {
-	openssl := make(map[string]string)
-
-	// Look for openssl object
-	opensslPattern := `"openssl"\s*:\s*\{([^}]+)\}`
-	re := regexp.MustCompile(opensslPattern)
-	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
-		opensslContent := matches[1]
-
-		compiled := extractStringValue(opensslContent, "compiled")
-		running := extractStringValue(opensslContent, "running")
-
-		if compiled != "" {
-			openssl["compiled"] = compiled
-		}
-		if running != "" {
-			openssl["running"] = running
-		}
-	}
-
-	return openssl
-}
-
-// checkAuthenticationStatus checks if authentication is enabled
-func checkAuthenticationStatus(data string) string {
-	// Look for authentication-related indicators
-	if strings.Contains(data, `"authInfo"`) {
-		return "enabled"
-	}
-	if strings.Contains(data, `"authenticatedUsers"`) {
-		return "enabled"
-	}
-	if strings.Contains(data, `"authenticationMechanisms"`) {
-		return "partially enabled"
-	}
-	if strings.Contains(data, `"saslSupportedMechs"`) {
-		return "partially enabled"
-	}
-
-	// Check for specific auth-related fields
-	authPatterns := []string{
-		`"authenticationDatabase"`,
-		`"authSource"`,
-		`"authMechanism"`,
-	}
-
-	for _, pattern := range authPatterns {
-		if strings.Contains(data, pattern) {
-			return "partially enabled"
-		}
-	}
-
-	return "disabled"
-}
-
-// parseMongoDBResponse extracts comprehensive information from MongoDB response
-func parseMongoDBResponse(response []byte, command string) (map[string]any, string) {
-	info := make(map[string]any)
-
-	info["Response_Length"] = len(response)
-	info["Command_Used"] = command
+// parseMongoDBResponse extracts information from MongoDB response and populates structured fields
+func parseMongoDBResponse(response []byte, command string, conn net.Conn, timeout time.Duration) plugins.ServiceMongoDB {
+	result := plugins.ServiceMongoDB{}
 
 	// Skip OP_REPLY header (36 bytes) to get to BSON document
 	if len(response) < 36 {
-		return info, "mongodb"
+		result.Product = "mongodb"
+		return result
 	}
 
-	responseStr := string(response)
-
-	// Extract basic version information
-	version := extractStringValue(responseStr, "version")
-	gitVersion := extractStringValue(responseStr, "gitVersion")
-
-	// Extract version array
-	versionArrayPattern := `"versionArray"\s*:\s*\[\s*([^\]]+)\s*\]`
-	re := regexp.MustCompile(versionArrayPattern)
-	if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-		info["Version_Array"] = matches[1]
+	// Parse BSON document
+	bsonDoc, _, err := parseBSONDocument(response, 36)
+	if err != nil {
+		result.Product = "mongodb"
+		return result
 	}
 
-	// Extract runtime information
-	allocator := extractStringValue(responseStr, "allocator")
-	jsEngine := extractStringValue(responseStr, "javascriptEngine")
+	// Extract basic information
+	if v, ok := bsonDoc["version"]; ok {
+		if str, ok := v.(string); ok {
+			result.Version = str
+		}
+	}
 
-	// Extract system information
-	bits := extractStringValue(responseStr, "bits")
-	debug := extractStringValue(responseStr, "debug")
-	maxBSONSize := extractStringValue(responseStr, "maxBsonObjectSize")
+	if v, ok := bsonDoc["gitVersion"]; ok {
+		if str, ok := v.(string); ok {
+			result.GitVersion = str
+		}
+	}
+
+	if v, ok := bsonDoc["allocator"]; ok {
+		if str, ok := v.(string); ok {
+			result.Allocator = str
+		}
+	}
+
+	if v, ok := bsonDoc["javascriptEngine"]; ok {
+		if str, ok := v.(string); ok {
+			result.JavaScriptEngine = str
+		}
+	}
+
+	// Extract numeric fields
+	if v, ok := bsonDoc["maxBsonObjectSize"]; ok {
+		if num, ok := v.(int32); ok {
+			result.MaxBSONSize = int(num)
+		}
+	}
+
+	if v, ok := bsonDoc["bits"]; ok {
+		if num, ok := v.(int32); ok {
+			result.ArchitectureBits = int(num)
+		}
+	}
+
+	if v, ok := bsonDoc["debug"]; ok {
+		if b, ok := v.(bool); ok {
+			result.DebugBuild = b
+		}
+	}
 
 	// Extract storage engines
-	storageEngines := extractArrayValues(responseStr, "storageEngines")
-
-	// Extract modules
-	modules := extractArrayValues(responseStr, "modules")
-
-	// Extract build environment
-	buildEnv := extractBuildEnvironment(responseStr)
-
-	// Extract OpenSSL information
-	opensslInfo := extractOpenSSLInfo(responseStr)
-
-	// Extract cluster and operation time
-	clusterTime := extractStringValue(responseStr, "clusterTime")
-	operationTime := extractStringValue(responseStr, "operationTime")
-
-	// Check authentication status
-	authStatus := checkAuthenticationStatus(responseStr)
-
-	// Extract server type and role
-	var serverType, serverRole string
-	if strings.Contains(responseStr, "mongos") {
-		serverType = "mongos"
-	} else {
-		serverType = "mongod"
-	}
-
-	if strings.Contains(responseStr, `"ismaster":true`) || strings.Contains(responseStr, `"isWritablePrimary":true`) {
-		serverRole = "primary"
-	} else if strings.Contains(responseStr, `"secondary":true`) {
-		serverRole = "secondary"
-	}
-
-	// Store all extracted information
-	if version != "" {
-		info["MongoDB_Version"] = version
-	}
-	if gitVersion != "" {
-		info["Git_Version"] = gitVersion
-	}
-	if allocator != "" {
-		info["Allocator"] = allocator
-	}
-	if jsEngine != "" {
-		info["JavaScript_Engine"] = jsEngine
-	}
-	if bits != "" {
-		info["Architecture_Bits"] = bits
-	}
-	if debug != "" {
-		info["Debug_Build"] = debug
-	}
-	if maxBSONSize != "" {
-		info["Max_BSON_Size"] = maxBSONSize
-	}
-	if len(storageEngines) > 0 {
-		info["Storage_Engines"] = strings.Join(storageEngines, ", ")
-	}
-	if len(modules) > 0 {
-		info["Modules"] = strings.Join(modules, ", ")
-	} else {
-		info["Modules"] = "none"
-	}
-	if authStatus != "" {
-		info["Authentication"] = authStatus
-	}
-	if serverType != "" {
-		info["Server_Type"] = serverType
-	}
-	if serverRole != "" {
-		info["Server_Role"] = serverRole
-	}
-	if clusterTime != "" {
-		info["Cluster_Time"] = clusterTime
-	}
-	if operationTime != "" {
-		info["Operation_Time"] = operationTime
-	}
-
-	// Store build environment details
-	if len(buildEnv) > 0 {
-		var buildDetails []string
-		if arch, ok := buildEnv["distarch"]; ok {
-			buildDetails = append(buildDetails, "arch:"+arch)
-		} else if arch, ok := buildEnv["target_arch"]; ok {
-			buildDetails = append(buildDetails, "arch:"+arch)
-		}
-		if os, ok := buildEnv["target_os"]; ok {
-			buildDetails = append(buildDetails, "os:"+os)
-		}
-		if distmod, ok := buildEnv["distmod"]; ok {
-			buildDetails = append(buildDetails, "distmod:"+distmod)
-		}
-		if cc, ok := buildEnv["cc"]; ok {
-			// Extract just the compiler version
-			ccRe := regexp.MustCompile(`gcc.*?([0-9]+\.[0-9]+\.[0-9]+)`)
-			if matches := ccRe.FindStringSubmatch(cc); len(matches) > 1 {
-				buildDetails = append(buildDetails, "gcc:"+matches[1])
+	if v, ok := bsonDoc["storageEngines"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			for _, item := range arr {
+				if str, ok := item.(string); ok {
+					result.StorageEngines = append(result.StorageEngines, str)
+				}
 			}
 		}
+	}
 
-		if len(buildDetails) > 0 {
-			info["Build_Environment"] = strings.Join(buildDetails, "; ")
+	// Extract modules
+	if v, ok := bsonDoc["modules"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			for _, item := range arr {
+				if str, ok := item.(string); ok {
+					result.Modules = append(result.Modules, str)
+				}
+			}
 		}
 	}
 
-	// Store OpenSSL information
-	if len(opensslInfo) > 0 {
-		if running, ok := opensslInfo["running"]; ok {
-			info["OpenSSL"] = running
-		} else if compiled, ok := opensslInfo["compiled"]; ok {
-			info["OpenSSL"] = compiled
+	// Extract version array
+	if v, ok := bsonDoc["versionArray"]; ok {
+		if arr, ok := v.([]interface{}); ok {
+			for _, item := range arr {
+				if num, ok := item.(int32); ok {
+					result.VersionArray = append(result.VersionArray, int(num))
+				}
+			}
 		}
 	}
 
-	// Create comprehensive product banner
-	productBanner := "mongodb"
-	if version != "" {
-		productBanner = fmt.Sprintf("mongodb %s", version)
-	}
-	if serverType != "" {
-		productBanner += fmt.Sprintf(" (%s)", serverType)
-	}
-	if allocator != "" {
-		productBanner += fmt.Sprintf(" [%s]", allocator)
-	}
-	if len(buildEnv) > 0 {
-		if arch, ok := buildEnv["distarch"]; ok {
-			productBanner += fmt.Sprintf(" (%s)", arch)
-		} else if arch, ok := buildEnv["target_arch"]; ok {
-			productBanner += fmt.Sprintf(" (%s)", arch)
+	// Extract build environment
+	if v, ok := bsonDoc["buildEnvironment"]; ok {
+		if doc, ok := v.(map[string]interface{}); ok {
+			if arch, ok := doc["distarch"]; ok {
+				if str, ok := arch.(string); ok {
+					result.BuildArch = str
+				}
+			}
+			if arch, ok := doc["target_arch"]; ok && result.BuildArch == "" {
+				if str, ok := arch.(string); ok {
+					result.BuildArch = str
+				}
+			}
+			if os, ok := doc["target_os"]; ok {
+				if str, ok := os.(string); ok {
+					result.BuildOS = str
+				}
+			}
+			if distmod, ok := doc["distmod"]; ok {
+				if str, ok := distmod.(string); ok {
+					result.BuildDistmod = str
+				}
+			}
+			if cc, ok := doc["cc"]; ok {
+				if str, ok := cc.(string); ok {
+					result.GCCVersion = extractGCCVersion(str)
+				}
+			}
+			if cxxflags, ok := doc["cxxflags"]; ok {
+				if str, ok := cxxflags.(string); ok {
+					result.CXXFlags = str
+				}
+			}
+			if linkflags, ok := doc["linkflags"]; ok {
+				if str, ok := linkflags.(string); ok {
+					result.LinkFlags = str
+				}
+			}
+			if ccflags, ok := doc["ccflags"]; ok {
+				if str, ok := ccflags.(string); ok {
+					result.CCFlags = str
+				}
+			}
 		}
 	}
-	if authStatus != "disabled" {
-		productBanner += fmt.Sprintf(" [auth:%s]", authStatus)
+
+	// Extract OpenSSL information
+	if v, ok := bsonDoc["openssl"]; ok {
+		if doc, ok := v.(map[string]interface{}); ok {
+			if compiled, ok := doc["compiled"]; ok {
+				if str, ok := compiled.(string); ok {
+					result.OpenSSLCompiled = str
+				}
+			}
+			if running, ok := doc["running"]; ok {
+				if str, ok := running.(string); ok {
+					result.OpenSSLRunning = str
+				}
+			}
+		}
 	}
 
-	return info, productBanner
+	// Extract cluster time
+	if v, ok := bsonDoc["$clusterTime"]; ok {
+		if doc, ok := v.(map[string]interface{}); ok {
+			if clusterTime, ok := doc["clusterTime"]; ok {
+				if str, ok := clusterTime.(string); ok {
+					result.ClusterTime = str
+				}
+			}
+		}
+	}
+
+	if v, ok := bsonDoc["operationTime"]; ok {
+		if str, ok := v.(string); ok {
+			result.OperationTime = str
+		}
+	}
+
+	// Determine server type
+	result.ServerType = "mongod"
+	if v, ok := bsonDoc["msg"]; ok {
+		if str, ok := v.(string); ok && strings.Contains(str, "mongos") {
+			result.ServerType = "mongos"
+		}
+	}
+
+	// Determine server role
+	if v, ok := bsonDoc["ismaster"]; ok {
+		if b, ok := v.(bool); ok && b {
+			result.ServerRole = "primary"
+		}
+	}
+	if v, ok := bsonDoc["isWritablePrimary"]; ok {
+		if b, ok := v.(bool); ok && b {
+			result.ServerRole = "primary"
+		}
+	}
+	if v, ok := bsonDoc["secondary"]; ok {
+		if b, ok := v.(bool); ok && b {
+			result.ServerRole = "secondary"
+		}
+	}
+
+	// Check authentication status
+	result.Authentication = "disabled"
+	if _, ok := bsonDoc["authInfo"]; ok {
+		result.Authentication = "enabled"
+	} else if _, ok := bsonDoc["saslSupportedMechs"]; ok {
+		result.Authentication = "partially enabled"
+	} else if _, ok := bsonDoc["authenticatedUsers"]; ok {
+		result.Authentication = "enabled"
+	}
+
+	// Check vulnerability (if auth is disabled, try to list databases)
+	authDisabled := result.Authentication == "disabled"
+	vulnerable, databases := checkVulnerability(conn, timeout, authDisabled)
+	result.Vulnerable = vulnerable
+	result.Databases = databases
+
+	// Create product banner
+	result.Product = "mongodb"
+	if result.Version != "" {
+		result.Product = fmt.Sprintf("mongodb %s", result.Version)
+	}
+	if result.ServerType != "" {
+		result.Product += fmt.Sprintf(" (%s)", result.ServerType)
+	}
+	if result.Allocator != "" {
+		result.Product += fmt.Sprintf(" [%s]", result.Allocator)
+	}
+	if result.BuildArch != "" {
+		result.Product += fmt.Sprintf(" (%s)", result.BuildArch)
+	}
+	if result.Authentication != "disabled" {
+		result.Product += fmt.Sprintf(" [auth:%s]", result.Authentication)
+	}
+	if result.Vulnerable {
+		result.Product += " [VULNERABLE]"
+	}
+
+	return result
 }
 
 func (p *MongoDBPlugin) PortPriority(port uint16) bool {
@@ -529,12 +733,7 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 
 		response, err := utils.SendRecv(conn, message, timeout)
 		if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
-			infoMap, productBanner := parseMongoDBResponse(response, command)
-			mongoInfo := fmt.Sprintf("%s", infoMap)
-			payload := plugins.ServiceMongoDB{
-				Info:    mongoInfo,
-				Product: productBanner,
-			}
+			payload := parseMongoDBResponse(response, command, conn, timeout)
 			return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
 		}
 	}

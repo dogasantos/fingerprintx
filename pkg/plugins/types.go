@@ -864,6 +864,48 @@ type ServiceWinbox struct {
 func (e ServiceMongoDB) Type() string { return ProtoMONGO }
 
 type ServiceMongoDB struct {
-	Info    string `json:"info"`
-	Product string `json:"product"`
+	// Basic Information
+	Version    string `json:"version,omitempty"`
+	GitVersion string `json:"gitVersion,omitempty"`
+	Product    string `json:"product"`
+
+	// Server Information
+	ServerType       string `json:"serverType,omitempty"`
+	ServerRole       string `json:"serverRole,omitempty"`
+	ArchitectureBits int    `json:"architectureBits,omitempty"`
+
+	// Runtime Information
+	Allocator        string `json:"allocator,omitempty"`
+	JavaScriptEngine string `json:"javascriptEngine,omitempty"`
+	MaxBSONSize      int    `json:"maxBsonObjectSize,omitempty"`
+
+	// Storage
+	StorageEngines []string `json:"storageEngines,omitempty"`
+
+	// Build Environment
+	BuildArch    string `json:"buildArch,omitempty"`
+	BuildOS      string `json:"buildOS,omitempty"`
+	BuildDistmod string `json:"buildDistmod,omitempty"`
+	GCCVersion   string `json:"gccVersion,omitempty"`
+	CXXFlags     string `json:"cxxFlags,omitempty"`
+	LinkFlags    string `json:"linkFlags,omitempty"`
+	CCFlags      string `json:"ccFlags,omitempty"`
+
+	// Security
+	Authentication string   `json:"authentication,omitempty"`
+	Vulnerable     bool     `json:"vulnerable,omitempty"`
+	Databases      []string `json:"databases,omitempty"`
+
+	// SSL/TLS
+	OpenSSLCompiled string `json:"opensslCompiled,omitempty"`
+	OpenSSLRunning  string `json:"opensslRunning,omitempty"`
+
+	// Cluster Information
+	ClusterTime   string `json:"clusterTime,omitempty"`
+	OperationTime string `json:"operationTime,omitempty"`
+
+	// Additional Information
+	Modules      []string `json:"modules,omitempty"`
+	VersionArray []int    `json:"versionArray,omitempty"`
+	DebugBuild   bool     `json:"debugBuild,omitempty"`
 }
