@@ -85,20 +85,20 @@ func extractStringsFromResponse(response []byte) []string {
 	re := regexp.MustCompile(`[a-zA-Z0-9\-\.\_]{4,}`)
 	matches := re.FindAll(response, -1)
 
-	var strings []string
+	var extractedStrings []string
 	for _, match := range matches {
 		str := string(match)
 		if len(str) >= 4 {
-			strings = append(strings, str)
+			extractedStrings = append(extractedStrings, str)
 		}
 	}
 
-	return strings
+	return extractedStrings
 }
 
 // identifyVendorFromStrings attempts to identify vendor from extracted strings
-func identifyVendorFromStrings(strings []string, hostName string) (string, string) {
-	combined := strings.ToLower(strings.Join(strings, " ") + " " + hostName)
+func identifyVendorFromStrings(extractedStrings []string, hostName string) (string, string) {
+	combined := strings.ToLower(strings.Join(extractedStrings, " ") + " " + hostName)
 
 	// Vendor patterns with version extraction
 	vendorPatterns := map[string]struct {
@@ -147,7 +147,7 @@ func identifyVendorFromStrings(strings []string, hostName string) (string, strin
 
 	// Check for generic version patterns in hostname or strings
 	versionRe := regexp.MustCompile(`[\-\.]v?([\d]+\.[\d]+(?:\.[\d]+)?)`)
-	for _, str := range strings {
+	for _, str := range extractedStrings {
 		if matches := versionRe.FindStringSubmatch(strings.ToLower(str)); len(matches) > 1 {
 			return "Unknown", matches[1]
 		}
