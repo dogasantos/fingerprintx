@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/dogasantos/fingerprintx/pkg/plugins"
@@ -65,6 +67,19 @@ var (
 
 func init() {
 	plugins.RegisterPlugin(&RADIUSPlugin{})
+}
+
+// getPortFromConnection extracts port number from connection
+func getPortFromConnection(conn net.Conn) uint16 {
+	addr := conn.RemoteAddr().String()
+	parts := strings.Split(addr, ":")
+	if len(parts) >= 2 {
+		portStr := parts[len(parts)-1]
+		if port, err := strconv.Atoi(portStr); err == nil {
+			return uint16(port)
+		}
+	}
+	return 0
 }
 
 // isValidRADIUSResponse validates if response is actually RADIUS
@@ -130,8 +145,9 @@ func (p *RADIUSPlugin) isValidRADIUSResponse(response []byte) bool {
 
 // Run performs RADIUS detection
 func (p *RADIUSPlugin) Run(conn net.Conn, timeout time.Duration, target plugins.Target) (*plugins.Service, error) {
-	// Only run on standard RADIUS ports for conservative detection
-	if !p.PortPriority(target.Port) {
+	// Get port from connection and only run on standard RADIUS ports for conservative detection
+	port := getPortFromConnection(conn)
+	if !p.PortPriority(port) {
 		return nil, nil
 	}
 
