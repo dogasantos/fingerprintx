@@ -82,6 +82,7 @@ const (
 	ProtoPPTP        = "pptp"
 	ProtoWINBOX      = "winbox"
 	ProtoMONGO       = "mongodb"
+	ProtoWINRM       = "winrm"
 )
 
 // Used as a key for maps to plugins.
@@ -277,6 +278,11 @@ func (e Service) Metadata() Metadata {
 		var p ServiceMongoDB
 		_ = json.Unmarshal(e.Raw, &p)
 		return p
+	case ProtoWINRM:
+		var p ServiceWinRM
+		_ = json.Unmarshal(e.Raw, &p)
+		return p
+
 	//default
 	default:
 		var p ServiceUnknown
@@ -908,4 +914,44 @@ type ServiceMongoDB struct {
 	Modules      []string `json:"modules,omitempty"`
 	VersionArray []int    `json:"versionArray,omitempty"`
 	DebugBuild   bool     `json:"debugBuild,omitempty"`
+}
+
+func (e ServiceWinRM) Type() string { return ProtoWINRM }
+
+type ServiceWinRM struct {
+	// Basic Information
+	Product string `json:"product"`
+	Version string `json:"version,omitempty"`
+
+	// Server Information
+	ServerType   string `json:"serverType,omitempty"`
+	OSVersion    string `json:"osVersion,omitempty"`
+	ComputerName string `json:"computerName,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+
+	// Protocol Information
+	Protocol     string `json:"protocol,omitempty"`     // HTTP or HTTPS
+	WSManVersion string `json:"wsmanVersion,omitempty"` // WS-Management version
+	SOAPVersion  string `json:"soapVersion,omitempty"`  // SOAP version
+
+	// Authentication
+	AuthMethods []string `json:"authMethods,omitempty"` // Supported auth methods
+	Anonymous   bool     `json:"anonymous"`             // Anonymous access allowed
+	Vulnerable  bool     `json:"vulnerable"`            // Security vulnerabilities
+
+	// Endpoints
+	Endpoints []string `json:"endpoints,omitempty"` // Available WinRM endpoints
+
+	// Security Features
+	Encryption  string `json:"encryption,omitempty"`  // Encryption status
+	Certificate string `json:"certificate,omitempty"` // SSL certificate info
+
+	// Configuration
+	MaxEnvelope int `json:"maxEnvelopeSize,omitempty"` // Max SOAP envelope size
+	MaxTimeout  int `json:"maxTimeout,omitempty"`      // Max operation timeout
+	MaxShells   int `json:"maxShells,omitempty"`       // Max concurrent shells
+
+	// Additional Information
+	PowerShell  bool `json:"powershell,omitempty"`  // PowerShell remoting enabled
+	RemoteShell bool `json:"remoteShell,omitempty"` // Remote shell access
 }
