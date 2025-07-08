@@ -16,7 +16,9 @@ package mongodb
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"log"
 	"net"
 	"regexp"
 	"strconv"
@@ -493,9 +495,12 @@ func parseMongoDBResponse(response []byte, command string) plugins.ServiceMongoD
 
 	// For listDatabases command, extract database names and set vulnerability
 	if command == "listDatabases" {
+		log.Printf("MONGODB DEBUG: Processing listDatabases response")
 		result.Databases = extractDatabaseNames(bsonData)
+		log.Printf("MONGODB DEBUG: Extracted %d databases: %v", len(result.Databases), result.Databases)
 		if len(result.Databases) > 0 {
 			result.Vulnerable = true
+			log.Printf("MONGODB DEBUG: Setting vulnerable = true")
 		}
 	}
 
@@ -525,46 +530,104 @@ func parseMongoDBResponse(response []byte, command string) plugins.ServiceMongoD
 
 // tryListDatabases attempts to list databases using both OP_QUERY and OP_MSG protocols
 func tryListDatabases(conn net.Conn, timeout time.Duration) ([]string, bool) {
+	log.Printf("MONGODB DEBUG: Starting vulnerability testing with dual protocol support")
+
 	// First try OP_QUERY (legacy protocol)
 	requestID := int32(999)
 	message := createMongoDBQuery("listDatabases", requestID)
 	if message != nil {
+		log.Printf("MONGODB DEBUG: Trying OP_QUERY listDatabases")
 		response, err := utils.SendRecv(conn, message, timeout)
-		if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
-			bsonData := getBSONDataFromResponse(response)
-			if bsonData != nil {
-				errorMsg := extractStringFromBSON(bsonData, "errmsg")
+		if err != nil {
+			log.Printf("MONGODB DEBUG: OP_QUERY error: %v", err)
+		} else {
+			log.Printf("MONGODB DEBUG: OP_QUERY response received (%d bytes)", len(response))
 
-				// If no error, extract databases
-				if errorMsg == "" {
-					databases := extractDatabaseNames(bsonData)
-					return databases, len(databases) > 0
-				}
+			if len(response) > 0 && isValidMongoDBResponse(response) {
+				log.Printf("MONGODB DEBUG: Valid OP_QUERY response")
+				bsonData := getBSONDataFromResponse(response)
+				if bsonData != nil {
+					// Show hex dump
+					dumpLen := len(bsonData)
+					if dumpLen > 200 {
+						dumpLen = 200
+					}
+					log.Printf("MONGODB DEBUG: OP_QUERY BSON hex dump (first %d bytes): %s", dumpLen, hex.EncodeToString(bsonData[:dumpLen]))
 
-				// If error is about legacy opcode removal, try OP_MSG
-				if strings.Contains(errorMsg, "legacy-opcode-removal") ||
-					strings.Contains(errorMsg, "Unsupported OP_QUERY") {
-					// Try OP_MSG protocol
-					requestID = int32(1000)
-					msgMessage := createMongoDBOpMsg("listDatabases", requestID)
-					if msgMessage != nil {
-						msgResponse, msgErr := utils.SendRecv(conn, msgMessage, timeout)
-						if msgErr == nil && len(msgResponse) > 0 && isValidMongoDBResponse(msgResponse) {
-							msgBsonData := getBSONDataFromResponse(msgResponse)
-							if msgBsonData != nil {
-								msgErrorMsg := extractStringFromBSON(msgBsonData, "errmsg")
-								if msgErrorMsg == "" {
-									databases := extractDatabaseNames(msgBsonData)
-									return databases, len(databases) > 0
+					errorMsg := extractStringFromBSON(bsonData, "errmsg")
+					log.Printf("MONGODB DEBUG: OP_QUERY error message: '%s'", errorMsg)
+
+					// If no error, extract databases
+					if errorMsg == "" {
+						log.Printf("MONGODB DEBUG: No error in OP_QUERY, extracting databases")
+						databases := extractDatabaseNames(bsonData)
+						log.Printf("MONGODB DEBUG: OP_QUERY extracted %d databases: %v", len(databases), databases)
+						return databases, len(databases) > 0
+					}
+
+					// If error is about legacy opcode removal, try OP_MSG
+					if strings.Contains(errorMsg, "legacy-opcode-removal") ||
+						strings.Contains(errorMsg, "Unsupported OP_QUERY") {
+						log.Printf("MONGODB DEBUG: OP_QUERY not supported, trying OP_MSG")
+
+						// Try OP_MSG protocol
+						requestID = int32(1000)
+						msgMessage := createMongoDBOpMsg("listDatabases", requestID)
+						if msgMessage != nil {
+							log.Printf("MONGODB DEBUG: Sending OP_MSG listDatabases")
+							msgResponse, msgErr := utils.SendRecv(conn, msgMessage, timeout)
+							if msgErr != nil {
+								log.Printf("MONGODB DEBUG: OP_MSG error: %v", msgErr)
+							} else {
+								log.Printf("MONGODB DEBUG: OP_MSG response received (%d bytes)", len(msgResponse))
+
+								if len(msgResponse) > 0 && isValidMongoDBResponse(msgResponse) {
+									log.Printf("MONGODB DEBUG: Valid OP_MSG response")
+									msgBsonData := getBSONDataFromResponse(msgResponse)
+									if msgBsonData != nil {
+										// Show hex dump
+										msgDumpLen := len(msgBsonData)
+										if msgDumpLen > 200 {
+											msgDumpLen = 200
+										}
+										log.Printf("MONGODB DEBUG: OP_MSG BSON hex dump (first %d bytes): %s", msgDumpLen, hex.EncodeToString(msgBsonData[:msgDumpLen]))
+
+										msgErrorMsg := extractStringFromBSON(msgBsonData, "errmsg")
+										log.Printf("MONGODB DEBUG: OP_MSG error message: '%s'", msgErrorMsg)
+
+										if msgErrorMsg == "" {
+											log.Printf("MONGODB DEBUG: No error in OP_MSG, extracting databases")
+											databases := extractDatabaseNames(msgBsonData)
+											log.Printf("MONGODB DEBUG: OP_MSG extracted %d databases: %v", len(databases), databases)
+											return databases, len(databases) > 0
+										} else {
+											log.Printf("MONGODB DEBUG: OP_MSG returned error: %s", msgErrorMsg)
+										}
+									} else {
+										log.Printf("MONGODB DEBUG: Failed to extract BSON data from OP_MSG response")
+									}
+								} else {
+									log.Printf("MONGODB DEBUG: Invalid OP_MSG response")
 								}
 							}
+						} else {
+							log.Printf("MONGODB DEBUG: Failed to create OP_MSG message")
 						}
+					} else {
+						log.Printf("MONGODB DEBUG: OP_QUERY error not related to legacy opcode: %s", errorMsg)
 					}
+				} else {
+					log.Printf("MONGODB DEBUG: Failed to extract BSON data from OP_QUERY response")
 				}
+			} else {
+				log.Printf("MONGODB DEBUG: Invalid OP_QUERY response")
 			}
 		}
+	} else {
+		log.Printf("MONGODB DEBUG: Failed to create OP_QUERY message")
 	}
 
+	log.Printf("MONGODB DEBUG: Vulnerability testing failed - no databases found")
 	return nil, false
 }
 
@@ -616,18 +679,29 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 
 	// If we have basic MongoDB detection and authentication is disabled, test for vulnerability
 	if bestResult != nil && bestResult.Authentication == "disabled" {
+		log.Printf("MONGODB DEBUG: Authentication is disabled, testing vulnerability")
 		databases, vulnerable := tryListDatabases(conn, timeout)
 		if vulnerable {
+			log.Printf("MONGODB DEBUG: Vulnerability confirmed - setting databases and vulnerable flag")
 			bestResult.Databases = databases
 			bestResult.Vulnerable = true
 			// Update product banner to include vulnerability status
 			if !strings.Contains(bestResult.Product, "[VULNERABLE]") {
 				bestResult.Product += " [VULNERABLE]"
 			}
+		} else {
+			log.Printf("MONGODB DEBUG: No vulnerability detected")
+		}
+	} else {
+		if bestResult == nil {
+			log.Printf("MONGODB DEBUG: No MongoDB detection result")
+		} else {
+			log.Printf("MONGODB DEBUG: Authentication is not disabled (%s), skipping vulnerability test", bestResult.Authentication)
 		}
 	}
 
 	if bestResult != nil {
+		log.Printf("MONGODB DEBUG: Final result: vulnerable=%v, databases=%v", bestResult.Vulnerable, bestResult.Databases)
 		return plugins.CreateServiceFrom(target, *bestResult, false, "", plugins.TCP), nil
 	}
 
