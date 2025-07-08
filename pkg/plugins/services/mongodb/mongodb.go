@@ -296,6 +296,51 @@ func extractNestedStringFromBSON(data []byte, parentField, childField string) st
 	return ""
 }
 
+// extractDatabaseNames extracts database names from listDatabases response
+func extractDatabaseNames(data []byte) []string {
+	var databases []string
+
+	// Look for "databases" array in the response
+	for i := 0; i < len(data)-20; i++ {
+		if i > 0 && data[i-1] == 0x04 { // Array type
+			// Check for "databases" field name
+			if i+9 < len(data) && string(data[i:i+9]) == "databases" && data[i+9] == 0x00 {
+				// Found databases array
+				arrayOffset := i + 10
+				if arrayOffset+4 < len(data) {
+					arrayLen := binary.LittleEndian.Uint32(data[arrayOffset : arrayOffset+4])
+					if arrayLen > 4 && arrayLen < 4096 && arrayOffset+int(arrayLen) <= len(data) {
+						// Parse array elements (each is a document with "name" field)
+						arrayData := data[arrayOffset+4 : arrayOffset+int(arrayLen)]
+						for j := 0; j < len(arrayData)-10; j++ {
+							if arrayData[j] == 0x03 { // Document type
+								// Skip index and look for "name" field in document
+								docOffset := j + 2 // Skip type and index
+								for docOffset < len(arrayData) && arrayData[docOffset] != 0x00 {
+									docOffset++
+								}
+								docOffset++ // Skip null terminator
+								if docOffset+4 < len(arrayData) {
+									docLen := binary.LittleEndian.Uint32(arrayData[docOffset : docOffset+4])
+									if docLen > 4 && docLen < 256 && docOffset+int(docLen) <= len(arrayData) {
+										docData := arrayData[docOffset+4 : docOffset+int(docLen)]
+										if name := extractStringFromBSON(docData, "name"); name != "" {
+											databases = append(databases, name)
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				break
+			}
+		}
+	}
+
+	return databases
+}
+
 // isPrintableString checks if a string contains only printable characters
 func isPrintableString(s string) bool {
 	if len(s) == 0 || len(s) > 256 {
@@ -378,6 +423,14 @@ func parseMongoDBResponse(response []byte, command string) plugins.ServiceMongoD
 		result.Authentication = "partially enabled"
 	}
 
+	// For listDatabases command, extract database names and set vulnerability
+	if command == "listDatabases" {
+		result.Databases = extractDatabaseNames(bsonData)
+		if len(result.Databases) > 0 {
+			result.Vulnerable = true
+		}
+	}
+
 	// Create product banner
 	result.Product = "mongodb"
 	if result.Version != "" {
@@ -394,6 +447,9 @@ func parseMongoDBResponse(response []byte, command string) plugins.ServiceMongoD
 	}
 	if result.Authentication != "disabled" {
 		result.Product += fmt.Sprintf(" [auth:%s]", result.Authentication)
+	}
+	if result.Vulnerable {
+		result.Product += " [VULNERABLE]"
 	}
 
 	return result
@@ -420,6 +476,8 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 	// Try different MongoDB commands in order of information richness
 	commands := []string{"buildInfo", "isMaster", "hello"}
 
+	var bestResult *plugins.ServiceMongoDB
+
 	for i, command := range commands {
 		requestID := int32(i + 1)
 		message := createMongoDBQuery(command, requestID)
@@ -431,16 +489,48 @@ func (p *MongoDBPlugin) Run(conn net.Conn, timeout time.Duration, target plugins
 		if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
 			payload := parseMongoDBResponse(response, command)
 
-			// If we got detailed info from buildInfo, use it
-			if command == "buildInfo" && payload.Version != "" {
-				return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+			// Keep the result with the most information
+			if bestResult == nil || payload.Version != "" {
+				bestResult = &payload
 			}
 
-			// Otherwise, return basic detection
-			if payload.ServerType != "" {
-				return plugins.CreateServiceFrom(target, payload, false, "", plugins.TCP), nil
+			// If we got detailed info from buildInfo, we're done with basic detection
+			if command == "buildInfo" && payload.Version != "" {
+				break
 			}
 		}
+	}
+
+	// If we have basic MongoDB detection and authentication is disabled, test for vulnerability
+	if bestResult != nil && bestResult.Authentication == "disabled" {
+		// Try listDatabases to check if we can access database list without authentication
+		requestID := int32(999)
+		message := createMongoDBQuery("listDatabases", requestID)
+		if message != nil {
+			response, err := utils.SendRecv(conn, message, timeout)
+			if err == nil && len(response) > 0 && isValidMongoDBResponse(response) {
+				// Check if the response contains an error or actual database list
+				bsonData := response[36:]
+				errorMsg := extractStringFromBSON(bsonData, "errmsg")
+
+				// If no error message, try to extract databases
+				if errorMsg == "" {
+					dbResult := parseMongoDBResponse(response, "listDatabases")
+					if len(dbResult.Databases) > 0 {
+						bestResult.Databases = dbResult.Databases
+						bestResult.Vulnerable = true
+						// Update product banner to include vulnerability status
+						if !strings.Contains(bestResult.Product, "[VULNERABLE]") {
+							bestResult.Product += " [VULNERABLE]"
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if bestResult != nil {
+		return plugins.CreateServiceFrom(target, *bestResult, false, "", plugins.TCP), nil
 	}
 
 	return nil, nil
