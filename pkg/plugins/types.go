@@ -893,7 +893,7 @@ type ServiceMongoDB struct {
 
 	// Security
 	Authentication string   `json:"authentication,omitempty"`
-	Vulnerable     bool     `json:"vulnerable,omitempty"`
+	Vulnerable     bool     `json:"vulnerable"` // Removed omitempty to always show
 	Databases      []string `json:"databases,omitempty"`
 
 	// SSL/TLS
