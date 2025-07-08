@@ -192,7 +192,7 @@ func isValidMongoDBResponse(response []byte) bool {
 	responseStr := strings.ToLower(string(response))
 	mongoIndicators := []string{
 		"ismaster", "hello", "version", "mongodb", "buildinfo",
-		"maxbsonobjectsize", "gitversion", "allocator",
+		"maxbsonobjectsize", "gitversion", "allocator", "javascriptengine",
 	}
 
 	for _, indicator := range mongoIndicators {
@@ -204,57 +204,128 @@ func isValidMongoDBResponse(response []byte) bool {
 	return false
 }
 
-// extractBSONString extracts string value from BSON response
-func extractBSONString(data []byte, key string) string {
-	keyPattern := fmt.Sprintf(`%s\x00.{4}([^\x00]+)\x00`, regexp.QuoteMeta(key))
-	re := regexp.MustCompile(keyPattern)
-	if matches := re.Find(data); matches != nil {
-		// Extract string value (skip key name, null terminator, and 4-byte length)
-		start := len(key) + 1 + 4
-		if start < len(matches) {
-			end := start
-			for end < len(matches) && matches[end] != 0x00 {
-				end++
-			}
-			if end > start {
-				return string(matches[start:end])
-			}
+// extractStringValue extracts string value using multiple patterns
+func extractStringValue(data string, key string) string {
+	patterns := []string{
+		fmt.Sprintf(`"%s"\s*:\s*"([^"]+)"`, regexp.QuoteMeta(key)),
+		fmt.Sprintf(`%s["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s,}]+)`, regexp.QuoteMeta(key)),
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(`(?i)` + pattern)
+		if matches := re.FindStringSubmatch(data); len(matches) > 1 {
+			return strings.Trim(matches[1], `"`)
 		}
 	}
 	return ""
 }
 
-// extractBSONArray extracts array values from BSON response
-func extractBSONArray(data []byte, key string) []string {
+// extractArrayValues extracts array values
+func extractArrayValues(data string, key string) []string {
 	var values []string
 
-	// Look for array pattern: key + null + type(0x04) + array_data
-	keyBytes := append([]byte(key), 0x00)
-	keyIndex := strings.Index(string(data), string(keyBytes))
-	if keyIndex == -1 {
-		return values
-	}
-
-	// Simple extraction of string values from array
-	arrayStart := keyIndex + len(keyBytes) + 5 // skip type and length
-	if arrayStart >= len(data) {
-		return values
-	}
-
-	// Extract quoted strings from array
-	arrayData := string(data[arrayStart:])
-	re := regexp.MustCompile(`"([^"]+)"`)
-	matches := re.FindAllStringSubmatch(arrayData, -1)
-	for _, match := range matches {
-		if len(match) > 1 {
-			values = append(values, match[1])
+	// Pattern for JSON array
+	pattern := fmt.Sprintf(`"%s"\s*:\s*\[\s*([^\]]+)\s*\]`, regexp.QuoteMeta(key))
+	re := regexp.MustCompile(pattern)
+	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
+		// Extract quoted strings from array content
+		arrayContent := matches[1]
+		stringRe := regexp.MustCompile(`"([^"]+)"`)
+		stringMatches := stringRe.FindAllStringSubmatch(arrayContent, -1)
+		for _, match := range stringMatches {
+			if len(match) > 1 {
+				values = append(values, match[1])
+			}
 		}
 	}
 
 	return values
 }
 
-// parseMongoDBResponse extracts detailed information from MongoDB response
+// extractBuildEnvironment extracts detailed build environment information
+func extractBuildEnvironment(data string) map[string]string {
+	buildEnv := make(map[string]string)
+
+	// Look for buildEnvironment object
+	buildEnvPattern := `"buildEnvironment"\s*:\s*\{([^}]+)\}`
+	re := regexp.MustCompile(buildEnvPattern)
+	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
+		buildContent := matches[1]
+
+		// Extract individual build environment fields
+		fields := []string{
+			"distarch", "cc", "cxx", "cxxflags", "linkflags", "ccflags",
+			"target_arch", "target_os", "distmod",
+		}
+
+		for _, field := range fields {
+			value := extractStringValue(buildContent, field)
+			if value != "" {
+				buildEnv[field] = value
+			}
+		}
+	}
+
+	return buildEnv
+}
+
+// extractOpenSSLInfo extracts OpenSSL information
+func extractOpenSSLInfo(data string) map[string]string {
+	openssl := make(map[string]string)
+
+	// Look for openssl object
+	opensslPattern := `"openssl"\s*:\s*\{([^}]+)\}`
+	re := regexp.MustCompile(opensslPattern)
+	if matches := re.FindStringSubmatch(data); len(matches) > 1 {
+		opensslContent := matches[1]
+
+		compiled := extractStringValue(opensslContent, "compiled")
+		running := extractStringValue(opensslContent, "running")
+
+		if compiled != "" {
+			openssl["compiled"] = compiled
+		}
+		if running != "" {
+			openssl["running"] = running
+		}
+	}
+
+	return openssl
+}
+
+// checkAuthenticationStatus checks if authentication is enabled
+func checkAuthenticationStatus(data string) string {
+	// Look for authentication-related indicators
+	if strings.Contains(data, `"authInfo"`) {
+		return "enabled"
+	}
+	if strings.Contains(data, `"authenticatedUsers"`) {
+		return "enabled"
+	}
+	if strings.Contains(data, `"authenticationMechanisms"`) {
+		return "partially enabled"
+	}
+	if strings.Contains(data, `"saslSupportedMechs"`) {
+		return "partially enabled"
+	}
+
+	// Check for specific auth-related fields
+	authPatterns := []string{
+		`"authenticationDatabase"`,
+		`"authSource"`,
+		`"authMechanism"`,
+	}
+
+	for _, pattern := range authPatterns {
+		if strings.Contains(data, pattern) {
+			return "partially enabled"
+		}
+	}
+
+	return "disabled"
+}
+
+// parseMongoDBResponse extracts comprehensive information from MongoDB response
 func parseMongoDBResponse(response []byte, command string) (map[string]any, string) {
 	info := make(map[string]any)
 
@@ -266,71 +337,46 @@ func parseMongoDBResponse(response []byte, command string) (map[string]any, stri
 		return info, "mongodb"
 	}
 
-	bsonData := response[36:]
 	responseStr := string(response)
 
-	// Extract version information
-	version := extractBSONString(bsonData, "version")
-	if version == "" {
-		// Try alternative patterns
-		versionPatterns := []string{
-			`version["\x00\s]*[:\x00]\s*["\x00]*([0-9]+\.[0-9]+\.[0-9]+[^"\x00\s]*)`,
-			`"version":\s*"([^"]+)"`,
-		}
-		for _, pattern := range versionPatterns {
-			re := regexp.MustCompile(pattern)
-			if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-				version = matches[1]
-				break
-			}
-		}
+	// Extract basic version information
+	version := extractStringValue(responseStr, "version")
+	gitVersion := extractStringValue(responseStr, "gitVersion")
+
+	// Extract version array
+	versionArrayPattern := `"versionArray"\s*:\s*\[\s*([^\]]+)\s*\]`
+	re := regexp.MustCompile(versionArrayPattern)
+	if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
+		info["Version_Array"] = matches[1]
 	}
 
-	// Extract git version
-	gitVersion := extractBSONString(bsonData, "gitVersion")
-	if gitVersion == "" {
-		re := regexp.MustCompile(`gitVersion["\x00\s]*[:\x00]\s*["\x00]*([a-f0-9]{8,}[^"\x00\s]*)`)
-		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			gitVersion = matches[1]
-		}
-	}
+	// Extract runtime information
+	allocator := extractStringValue(responseStr, "allocator")
+	jsEngine := extractStringValue(responseStr, "javascriptEngine")
 
-	// Extract allocator
-	allocator := extractBSONString(bsonData, "allocator")
-	if allocator == "" {
-		re := regexp.MustCompile(`allocator["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s]+)`)
-		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			allocator = matches[1]
-		}
-	}
-
-	// Extract JavaScript engine
-	jsEngine := extractBSONString(bsonData, "javascriptEngine")
-	if jsEngine == "" {
-		re := regexp.MustCompile(`javascriptEngine["\x00\s]*[:\x00]\s*["\x00]*([^"\x00\s]+)`)
-		if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-			jsEngine = matches[1]
-		}
-	}
-
-	// Extract build environment
-	targetArch := extractBSONString(bsonData, "target_arch")
-	targetOS := extractBSONString(bsonData, "target_os")
-	distArch := extractBSONString(bsonData, "distarch")
+	// Extract system information
+	bits := extractStringValue(responseStr, "bits")
+	debug := extractStringValue(responseStr, "debug")
+	maxBSONSize := extractStringValue(responseStr, "maxBsonObjectSize")
 
 	// Extract storage engines
-	storageEngines := extractBSONArray(bsonData, "storageEngines")
+	storageEngines := extractArrayValues(responseStr, "storageEngines")
 
-	// Extract OpenSSL version
-	opensslCompiled := extractBSONString(bsonData, "compiled")
-	opensslRunning := extractBSONString(bsonData, "running")
+	// Extract modules
+	modules := extractArrayValues(responseStr, "modules")
 
-	// Extract max BSON object size
-	var maxBSONSize string
-	re := regexp.MustCompile(`maxBsonObjectSize["\x00\s]*[:\x00]\s*([0-9]+)`)
-	if matches := re.FindStringSubmatch(responseStr); len(matches) > 1 {
-		maxBSONSize = matches[1]
-	}
+	// Extract build environment
+	buildEnv := extractBuildEnvironment(responseStr)
+
+	// Extract OpenSSL information
+	opensslInfo := extractOpenSSLInfo(responseStr)
+
+	// Extract cluster and operation time
+	clusterTime := extractStringValue(responseStr, "clusterTime")
+	operationTime := extractStringValue(responseStr, "operationTime")
+
+	// Check authentication status
+	authStatus := checkAuthenticationStatus(responseStr)
 
 	// Extract server type and role
 	var serverType, serverRole string
@@ -346,7 +392,7 @@ func parseMongoDBResponse(response []byte, command string) (map[string]any, stri
 		serverRole = "secondary"
 	}
 
-	// Store extracted information
+	// Store all extracted information
 	if version != "" {
 		info["MongoDB_Version"] = version
 	}
@@ -359,38 +405,73 @@ func parseMongoDBResponse(response []byte, command string) (map[string]any, stri
 	if jsEngine != "" {
 		info["JavaScript_Engine"] = jsEngine
 	}
-	if targetArch != "" || targetOS != "" || distArch != "" {
-		var buildEnv []string
-		if distArch != "" {
-			buildEnv = append(buildEnv, "arch:"+distArch)
-		} else if targetArch != "" {
-			buildEnv = append(buildEnv, "arch:"+targetArch)
-		}
-		if targetOS != "" {
-			buildEnv = append(buildEnv, "os:"+targetOS)
-		}
-		if len(buildEnv) > 0 {
-			info["Build_Environment"] = strings.Join(buildEnv, "; ")
-		}
+	if bits != "" {
+		info["Architecture_Bits"] = bits
+	}
+	if debug != "" {
+		info["Debug_Build"] = debug
+	}
+	if maxBSONSize != "" {
+		info["Max_BSON_Size"] = maxBSONSize
 	}
 	if len(storageEngines) > 0 {
 		info["Storage_Engines"] = strings.Join(storageEngines, ", ")
 	}
-	if opensslCompiled != "" || opensslRunning != "" {
-		if opensslRunning != "" {
-			info["OpenSSL"] = opensslRunning
-		} else {
-			info["OpenSSL"] = opensslCompiled
-		}
+	if len(modules) > 0 {
+		info["Modules"] = strings.Join(modules, ", ")
+	} else {
+		info["Modules"] = "none"
 	}
-	if maxBSONSize != "" {
-		info["Max_BSON_Size"] = maxBSONSize
+	if authStatus != "" {
+		info["Authentication"] = authStatus
 	}
 	if serverType != "" {
 		info["Server_Type"] = serverType
 	}
 	if serverRole != "" {
 		info["Server_Role"] = serverRole
+	}
+	if clusterTime != "" {
+		info["Cluster_Time"] = clusterTime
+	}
+	if operationTime != "" {
+		info["Operation_Time"] = operationTime
+	}
+
+	// Store build environment details
+	if len(buildEnv) > 0 {
+		var buildDetails []string
+		if arch, ok := buildEnv["distarch"]; ok {
+			buildDetails = append(buildDetails, "arch:"+arch)
+		} else if arch, ok := buildEnv["target_arch"]; ok {
+			buildDetails = append(buildDetails, "arch:"+arch)
+		}
+		if os, ok := buildEnv["target_os"]; ok {
+			buildDetails = append(buildDetails, "os:"+os)
+		}
+		if distmod, ok := buildEnv["distmod"]; ok {
+			buildDetails = append(buildDetails, "distmod:"+distmod)
+		}
+		if cc, ok := buildEnv["cc"]; ok {
+			// Extract just the compiler version
+			ccRe := regexp.MustCompile(`gcc.*?([0-9]+\.[0-9]+\.[0-9]+)`)
+			if matches := ccRe.FindStringSubmatch(cc); len(matches) > 1 {
+				buildDetails = append(buildDetails, "gcc:"+matches[1])
+			}
+		}
+
+		if len(buildDetails) > 0 {
+			info["Build_Environment"] = strings.Join(buildDetails, "; ")
+		}
+	}
+
+	// Store OpenSSL information
+	if len(opensslInfo) > 0 {
+		if running, ok := opensslInfo["running"]; ok {
+			info["OpenSSL"] = running
+		} else if compiled, ok := opensslInfo["compiled"]; ok {
+			info["OpenSSL"] = compiled
+		}
 	}
 
 	// Create comprehensive product banner
@@ -404,12 +485,15 @@ func parseMongoDBResponse(response []byte, command string) (map[string]any, stri
 	if allocator != "" {
 		productBanner += fmt.Sprintf(" [%s]", allocator)
 	}
-	if targetArch != "" || distArch != "" {
-		arch := distArch
-		if arch == "" {
-			arch = targetArch
+	if len(buildEnv) > 0 {
+		if arch, ok := buildEnv["distarch"]; ok {
+			productBanner += fmt.Sprintf(" (%s)", arch)
+		} else if arch, ok := buildEnv["target_arch"]; ok {
+			productBanner += fmt.Sprintf(" (%s)", arch)
 		}
-		productBanner += fmt.Sprintf(" (%s)", arch)
+	}
+	if authStatus != "disabled" {
+		productBanner += fmt.Sprintf(" [auth:%s]", authStatus)
 	}
 
 	return info, productBanner
