@@ -160,7 +160,7 @@ func isValidWinboxProtocolResponse(response []byte) bool {
 					// Message length should be reasonable and consistent
 					if msgLen >= 6 && msgLen <= 65535 {
 						// Additional validation - check if this looks like proper Winbox structure
-						chunkOffset := response[i]
+						//chunkOffset := response[i]
 						msgType := response[i+1]
 
 						// Chunk offset should be reasonable (0-255)
