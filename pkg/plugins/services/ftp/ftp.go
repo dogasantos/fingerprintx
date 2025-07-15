@@ -19,8 +19,8 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	utils "github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
+	utils "github.com/vcore8/fingerprintx/pkg/plugins/pluginutils"
 )
 
 var ftpResponse = regexp.MustCompile(`^\d{3}[- ](.*)\r`)

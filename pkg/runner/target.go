@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
 )
 
 var inputFile string

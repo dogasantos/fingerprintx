@@ -5,8 +5,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
 	"github.com/miekg/dns"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
 )
 
 const DNS = "dns"

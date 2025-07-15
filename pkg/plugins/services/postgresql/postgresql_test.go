@@ -17,9 +17,9 @@ package postgres
 import (
 	"testing"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	"github.com/dogasantos/fingerprintx/pkg/test"
 	"github.com/ory/dockertest/v3"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/test"
 )
 
 func TestPostgreSQL(t *testing.T) {

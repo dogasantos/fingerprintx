@@ -20,8 +20,8 @@ import (
 	"net"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	"github.com/dogasantos/fingerprintx/pkg/plugins/pluginutils"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/plugins/pluginutils"
 )
 
 type EchoPlugin struct{}

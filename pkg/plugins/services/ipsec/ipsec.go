@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
 )
 
 const IPSEC = "ipsec"

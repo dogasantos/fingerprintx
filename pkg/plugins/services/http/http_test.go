@@ -17,10 +17,10 @@ package http
 import (
 	"testing"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
-	"github.com/dogasantos/fingerprintx/pkg/test"
 	"github.com/ory/dockertest/v3"
 	wappalyzer "github.com/projectdiscovery/wappalyzergo"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/test"
 )
 
 func TestHTTP(t *testing.T) {

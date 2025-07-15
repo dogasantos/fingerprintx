@@ -17,7 +17,7 @@ package scan
 import (
 	"log"
 
-	"github.com/dogasantos/fingerprintx/pkg/plugins"
+	"github.com/vcore8/fingerprintx/pkg/plugins"
 )
 
 func UDPScan(targets []plugins.Target, config Config) ([]plugins.Service, error) {

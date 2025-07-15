@@ -15,7 +15,7 @@
 package main
 
 import (
-	"github.com/dogasantos/fingerprintx/pkg/runner"
+	"github.com/vcore8/fingerprintx/pkg/runner"
 )
 
 func main() {
